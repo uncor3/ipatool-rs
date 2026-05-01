@@ -7,6 +7,32 @@ pub struct KeyringStore {
     account_key: String,
 }
 
+// unfortunately the keyring crate doesn't work the same way as the one in golang
+// we may need to rewrite keyring from scratch to match the golang one, maybe?
+//
+// ❯ lssecret
+// Collection:	Login
+
+// Item:	account@ipatool-auth.service:default (keyring v3.6.3)
+// Key:	application
+// Value:	rust-keyring
+// Key:	xdg:schema
+// Value:	org.freedesktop.Secret.Generic
+// Key:	service
+// Value:	ipatool-auth.service
+// Key:	target
+// Value:	default
+// Key:	username
+// Value:	account
+
+// Collection:
+
+// Collection:	ipatool-auth.service
+
+// Item:	account
+// Key:	profile
+// Value:	account
+//
 impl KeyringStore {
     pub fn new(service: String, account_key: String) -> Self {
         Self {
@@ -36,12 +62,10 @@ impl KeyringStore {
 
     pub fn delete(&self) -> Result<()> {
         let entry = keyring::Entry::new(&self.service, &self.account_key)?;
-        //FIXME
-        Ok(())
-        // match entry.delete_password() {
-        //     Ok(()) => Ok(()),
-        //     Err(keyring::Error::NoEntry) => Ok(()),
-        //     Err(e) => Err(Error::Keyring(e.to_string())),
-        // }
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(IpaToolError::Keyring(e.to_string())),
+        }
     }
 }
