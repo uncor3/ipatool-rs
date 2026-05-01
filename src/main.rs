@@ -4,6 +4,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use ipatool::util::{with_error_style, with_success_style};
 use ipatool::{DownloadArgs, IpaTool};
 use log::{error, info, trace, warn};
+use std::io;
 
 #[derive(Parser)]
 #[command(
@@ -77,6 +78,19 @@ enum AuthCommand {
     Revoke,
 }
 
+fn auth_cb() -> ipatool::Result<String> {
+    let mut input = "".to_string();
+
+    println!("Enter 2FA Code:");
+
+    io::stdin().read_line(&mut input).map_err(|e| {
+        ipatool::error::IpaToolError::Unexpected(format!("Failed to read input: {}", e))
+    })?;
+
+    //trim should be fine
+    Ok(input.trim().to_string())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
@@ -89,7 +103,8 @@ async fn main() -> anyhow::Result<()> {
                 password,
                 auth_code,
             } => {
-                tool.login(&email, &password, auth_code.as_deref()).await?;
+                tool.login(&email, &password, Some(Box::new(auth_cb)), auth_code)
+                    .await?;
             }
             AuthCommand::Info => match tool.account_info().await? {
                 Some(acc) => {
@@ -99,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
                     );
                     info!("{}", with_success_style(msg));
                 }
-                None => error!("No account"),
+                None => error!("{}", with_error_style("No account".to_string())),
             },
             AuthCommand::Revoke => {
                 tool.revoke().await?;

@@ -59,7 +59,13 @@ impl AppStoreClient {
         Ok(())
     }
 
-    pub async fn login(&self, email: &str, password: &str, auth_code: Option<&str>) -> Result<()> {
+    pub async fn login(
+        &self,
+        email: &str,
+        password: &str,
+        auth_code_cb: Option<Box<dyn Fn() -> Result<String> + Send + Sync>>,
+        auth_code: Option<String>,
+    ) -> Result<()> {
         let endpoint = bag::fetch_auth_endpoint(&self.http, &self.guid).await?;
         let account = login::login(
             &self.http,
@@ -68,7 +74,8 @@ impl AppStoreClient {
             endpoint,
             email,
             password,
-            auth_code.unwrap_or(""),
+            auth_code_cb,
+            auth_code,
         )
         .await?;
         self.keyring.set_json(&account)?;
@@ -98,7 +105,8 @@ impl AppStoreClient {
                     endpoint,
                     &acc.email,
                     &acc.password,
-                    "",
+                    None,
+                    None,
                 )
                 .await?;
                 self.keyring.set_json(&new_acc)?;
@@ -147,7 +155,8 @@ impl AppStoreClient {
                     endpoint,
                     &acc.email,
                     &acc.password,
-                    "",
+                    None,
+                    None,
                 )
                 .await?;
                 self.keyring.set_json(&new_acc)?;

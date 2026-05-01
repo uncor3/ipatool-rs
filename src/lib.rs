@@ -1,13 +1,13 @@
 mod appstore;
 mod config;
 mod constants;
-mod error;
+pub mod error;
 mod http;
 mod storage;
 pub mod util;
 
 use crate::appstore::types::{Account, ListVersionsResult};
-use crate::error::Result;
+pub use crate::error::Result;
 use appstore::AppStoreClient;
 use serde::{Deserialize, Serialize};
 
@@ -49,8 +49,17 @@ impl IpaTool {
         Ok(Self { appstore })
     }
 
-    pub async fn login(&self, email: &str, password: &str, auth_code: Option<&str>) -> Result<()> {
-        self.appstore.login(email, password, auth_code).await
+    pub async fn login(
+        &self,
+        email: &str,
+        password: &str,
+        // FIXME: we need to type this better
+        auth_code_cb: Option<Box<dyn Fn() -> Result<String> + Send + Sync>>,
+        auth_code: Option<String>,
+    ) -> Result<()> {
+        self.appstore
+            .login(email, password, auth_code_cb, auth_code)
+            .await
     }
 
     pub async fn account_info(&self) -> Result<Option<Account>> {

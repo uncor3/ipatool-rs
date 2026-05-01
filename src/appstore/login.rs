@@ -18,12 +18,14 @@ pub async fn login(
     mut endpoint: String,
     email: &str,
     password: &str,
-    auth_code: &str,
+    auth_code_cb: Option<Box<dyn Fn() -> Result<String> + Send + Sync>>,
+    auth_code: Option<String>,
 ) -> Result<Account> {
     let mut redirect: Option<String> = None;
     let mut retry = true;
 
     let mut last: Option<(u16, HeaderMap, LoginResult)> = None;
+    let mut auth_code = auth_code.unwrap_or("".to_string());
 
     for attempt in 1..=MAX_LOGIN_ATTEMPTS {
         if !retry {
@@ -75,7 +77,11 @@ pub async fn login(
             && auth_code.is_empty()
             && parsed.customer_message.as_deref() == Some(CUSTOMER_MESSAGE_BAD_LOGIN)
         {
-            return Err(IpaToolError::AuthCodeRequired);
+            let cb = auth_code_cb
+                .as_deref()
+                .ok_or_else(|| IpaToolError::AuthCodeRequired)?;
+            auth_code = cb().map_err(|_| IpaToolError::AuthCodeRequired)?;
+            retry = true;
         } else if parsed.failure_type.is_none()
             && parsed.customer_message.as_deref() == Some(CUSTOMER_MESSAGE_ACCOUNT_DISABLED)
         {
