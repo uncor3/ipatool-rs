@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, macos-13, windows-2022]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build release binary
+        run: cargo build --release --features=cli --bin ipatool-rs
+
+      - name: Set artifact name
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            echo "BIN_PATH=target/release/ipatool-rs.exe" >> $GITHUB_ENV
+            echo "ASSET_NAME=ipatool-rs-windows.exe" >> $GITHUB_ENV
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            echo "BIN_PATH=target/release/ipatool-rs" >> $GITHUB_ENV
+            echo "ASSET_NAME=ipatool-rs-macos" >> $GITHUB_ENV
+          else
+            echo "BIN_PATH=target/release/ipatool-rs" >> $GITHUB_ENV
+            echo "ASSET_NAME=ipatool-rs-linux" >> $GITHUB_ENV
+          fi
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.BIN_PATH }}
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
