@@ -1,5 +1,7 @@
 use crate::error::{IpaToolError, Result};
+#[cfg(feature = "cli")]
 use owo_colors::OwoColorize;
+#[cfg(feature = "cli")]
 use owo_colors::colors::*;
 use regex::Regex;
 
@@ -64,10 +66,13 @@ pub fn normalize_plist_body(body: &[u8]) -> Vec<u8> {
     s.into_bytes()
 }
 
+//FIXME: we may move these
+#[cfg(feature = "cli")]
 pub fn with_success_style(text: String) -> String {
     format!("[SUCCESS]: {}", text.fg::<Black>().bg::<Green>())
 }
 
+#[cfg(feature = "cli")]
 pub fn with_error_style(text: String) -> String {
     format!("[ERROR]: {}", text.fg::<White>().bg::<Red>())
 }
