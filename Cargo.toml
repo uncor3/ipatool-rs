@@ -23,10 +23,21 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 bytes = "1"
 futures-util = "0.3"
 
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] , optional = true }
 dirs = "5"
 mac_address = "1.1.8"
-indicatif = "0.18.4"
+indicatif = {version = "0.18.4" , optional = true }
 log = "0.4.29"
 env_logger = "0.11.10"
-owo-colors = "4.3.0"
+owo-colors = {version = "4.3.0" , optional = true }
+
+
+[features]
+default = []
+cli = ["dep:clap", "dep:indicatif" , "dep:owo-colors"]
+
+[[bin]]
+name = "ipatool-rs"
+path = "src/bin/ipatool-rs.rs"
+required-features = ["cli"]
+
