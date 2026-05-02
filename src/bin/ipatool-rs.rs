@@ -106,7 +106,10 @@ async fn main() -> anyhow::Result<()> {
                 tool.login(&email, &password, Some(Box::new(auth_cb)), auth_code)
                     .await?;
 
-                info!("{}", with_success_style("Logged in successfully"));
+                info!(
+                    "{}",
+                    with_success_style("Logged in successfully".to_string())
+                );
             }
             AuthCommand::Info => match tool.account_info().await? {
                 Some(acc) => {
