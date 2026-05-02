@@ -2,6 +2,8 @@
 name = "ipatool"
 version = "0.1.0"
 edition = "2024"
+description = "Download IPAs directly from Apple, a pure Rust port of ipatool."
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
