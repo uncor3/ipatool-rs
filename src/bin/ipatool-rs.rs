@@ -3,7 +3,7 @@ use env_logger::Env;
 use indicatif::{ProgressBar, ProgressStyle};
 use ipatool::util::{with_error_style, with_success_style};
 use ipatool::{DownloadArgs, IpaTool};
-use log::{error, info, trace, warn};
+use log::{error, info};
 use std::io;
 
 #[derive(Parser)]
@@ -105,6 +105,8 @@ async fn main() -> anyhow::Result<()> {
             } => {
                 tool.login(&email, &password, Some(Box::new(auth_cb)), auth_code)
                     .await?;
+
+                info!("{}", with_success_style("Logged in successfully"));
             }
             AuthCommand::Info => match tool.account_info().await? {
                 Some(acc) => {
