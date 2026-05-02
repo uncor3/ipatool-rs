@@ -31,6 +31,8 @@ jobs:
 
       - name: Build bin
         run: |
-          #lets do auth info for now  
+          #FIXME: happens with auth info
+          # Error: Keyring("Platform secure storage failure: DBus error: 
+          # The name org.freedesktop.secrets was not provided by any .service files")
           #we need tests
-          cargo run auth info
+          cargo run help
