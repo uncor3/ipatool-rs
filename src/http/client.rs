@@ -71,6 +71,7 @@ impl Http {
     }
 
     //FIXME
+    #[allow(dead_code)]
     pub async fn post_plist_bytes(
         &self,
         url: &str,

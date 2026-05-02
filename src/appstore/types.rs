@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::http::client::Http;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub name: String,
@@ -89,6 +87,7 @@ pub struct DownloadResult {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Sinf {
+    #[allow(dead_code)]
     #[serde(rename = "id")]
     pub id: Option<i64>,
     #[serde(rename = "sinf")]
@@ -97,6 +96,7 @@ pub struct Sinf {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DownloadItem {
+    #[allow(dead_code)]
     #[serde(rename = "md5")]
     pub md5: Option<String>,
     #[serde(rename = "URL")]

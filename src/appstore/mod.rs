@@ -20,6 +20,8 @@ use types::{Account, ListVersionsResult};
 
 #[derive(Clone)]
 pub struct AppStoreClient {
+    // FIXME: do we need cfg ?
+    #[allow(dead_code)]
     cfg: Config,
     http: Http,
     keyring: KeyringStore,
@@ -213,14 +215,14 @@ impl AppStoreClient {
         })
     }
 
-    //FIXME
+    //FIXME: implment
     pub async fn get_version_metadata(
         &self,
         app_id: Option<u64>,
         bundle_id: Option<&str>,
         external_version_id: &str,
     ) -> Result<crate::VersionMetadataResult> {
-        let mut acc = self.require_account()?;
+        // let acc = self.require_account()?;
         let app = match (app_id, bundle_id) {
             (_, Some(b)) => self.lookup(b).await?,
             (Some(id), None) => types::App {

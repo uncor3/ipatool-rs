@@ -1,7 +1,7 @@
-use crate::appstore::types::{Account, App, ListVersionsResult};
+use crate::Result;
+use crate::appstore::types::{Account, App};
 use crate::constants::{PRIVATE_APPSTORE_DOMAIN, PRIVATE_DOWNLOAD_PATH};
 use crate::http::client::Http;
-use crate::{Result, http};
 use plist::dictionary::Dictionary;
 use reqwest;
 

@@ -7,7 +7,7 @@ pub const CUSTOMER_MESSAGE_BAD_LOGIN: &str = "MZFinance.BadLogin.Configurator_me
 pub const CUSTOMER_MESSAGE_ACCOUNT_DISABLED: &str = "Your account is disabled.";
 pub const CUSTOMER_MESSAGE_SUBSCRIPTION_REQUIRED: &str = "Subscription Required";
 
-pub const ITUNES_API_DOMAIN: &str = "itunes.apple.com";
+// pub const ITUNES_API_DOMAIN: &str = "itunes.apple.com";
 pub const ITUNES_API_SEARCH: &str = "https://itunes.apple.com/search";
 pub const ITUNES_API_LOOKUP: &str = "https://itunes.apple.com/lookup";
 
