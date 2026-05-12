@@ -1,14 +1,14 @@
-mod appstore;
-mod config;
-mod constants;
+pub mod appstore;
+pub mod config;
+pub mod constants;
 pub mod error;
-mod http;
-mod storage;
+pub mod http;
+pub mod storage;
 pub mod util;
 
-use crate::appstore::types::{Account, ListVersionsResult};
+pub use crate::appstore::types::{Account, ListVersionsResult};
 pub use crate::error::Result;
-use appstore::AppStoreClient;
+pub use appstore::AppStoreClient;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]

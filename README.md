@@ -26,7 +26,7 @@ It will default to cli feature so use it like this if you want to use it as a li
 
 ```toml
 [dependencies]
-ipatool-rs = { version = "0.1.0", default-features = false }
+ipatool = { version = "0.1.0", default-features = false }
 ```
 
 Not affiliated with Apple
