@@ -29,7 +29,7 @@ pub struct AppStoreClient {
 }
 
 impl AppStoreClient {
-    pub async fn new(cfg: Config) -> Result<Self> {
+    pub fn new(cfg: Config) -> Result<Self> {
         cfg.ensure_dirs()?;
         let cookies = PersistentCookies::load_or_new(cfg.cookies_path.clone())?;
         let http = Http::new(cfg.user_agent.clone(), cookies)?;

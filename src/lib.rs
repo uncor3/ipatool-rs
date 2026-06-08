@@ -45,7 +45,7 @@ pub struct VersionMetadataResult {
 impl IpaTool {
     pub async fn new_default() -> Result<Self> {
         let cfg = config::Config::default_from_home()?;
-        let appstore = AppStoreClient::new(cfg).await?;
+        let appstore = AppStoreClient::new(cfg)?;
         Ok(Self { appstore })
     }
 
