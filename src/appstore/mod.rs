@@ -31,7 +31,7 @@ pub struct AppStoreClient {
 impl AppStoreClient {
     pub fn new(cfg: Config) -> Result<Self> {
         cfg.ensure_dirs()?;
-        let cookies = PersistentCookies::load_or_new(cfg.cookies_path.clone())?;
+        let cookies = PersistentCookies::load_or_new(cfg.cookies_path.clone());
         let http = Http::new(cfg.user_agent.clone(), cookies)?;
         let keyring =
             KeyringStore::new(cfg.keyring_service.clone(), cfg.keyring_account_key.clone());
@@ -56,7 +56,7 @@ impl AppStoreClient {
         }
     }
 
-    pub async fn revoke(&self) -> Result<()> {
+    pub fn revoke(&self) -> Result<()> {
         self.keyring.delete()?;
         Ok(())
     }
@@ -68,7 +68,11 @@ impl AppStoreClient {
         auth_code_cb: Option<Box<dyn Fn() -> Result<String> + Send + Sync>>,
         auth_code: Option<String>,
     ) -> Result<()> {
-        let endpoint = bag::fetch_auth_endpoint(&self.http, &self.guid).await?;
+        let mut endpoint = bag::fetch_auth_endpoint(&self.http, &self.guid).await?;
+        if !endpoint.ends_with('/') {
+            endpoint.push('/');
+        }
+
         let account = login::login(
             &self.http,
             &self.keyring,

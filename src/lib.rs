@@ -43,8 +43,8 @@ pub struct VersionMetadataResult {
 }
 
 impl IpaTool {
-    pub async fn new_default() -> Result<Self> {
-        let cfg = config::Config::default_from_home()?;
+    pub fn new_default() -> Result<Self> {
+        let cfg = config::Config::default_from_home();
         let appstore = AppStoreClient::new(cfg)?;
         Ok(Self { appstore })
     }
@@ -53,7 +53,6 @@ impl IpaTool {
         &self,
         email: &str,
         password: &str,
-        // FIXME: we need to type this better
         auth_code_cb: Option<Box<dyn Fn() -> Result<String> + Send + Sync>>,
         auth_code: Option<String>,
     ) -> Result<()> {
@@ -62,12 +61,12 @@ impl IpaTool {
             .await
     }
 
-    pub async fn account_info(&self) -> Result<Option<Account>> {
+    pub fn account_info(&self) -> Result<Option<Account>> {
         self.appstore.load_account()
     }
 
-    pub async fn revoke(&self) -> Result<()> {
-        self.appstore.revoke().await
+    pub fn revoke(&self) -> Result<()> {
+        self.appstore.revoke()
     }
 
     pub async fn search(&self, term: &str, limit: u32) -> Result<SearchResult> {

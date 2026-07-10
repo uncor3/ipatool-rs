@@ -12,9 +12,6 @@ pub enum IpaToolError {
     #[error("Failed to init defualt")]
     InitError,
 
-    #[error("could not resolve home directory")]
-    NoHomeDir,
-
     #[error("failed to get acount info")]
     ErrorAccount,
 

@@ -10,17 +10,17 @@ pub struct PersistentCookies {
 }
 
 impl PersistentCookies {
-    pub fn load_or_new(path: PathBuf) -> Result<Self> {
+    pub fn load_or_new(path: PathBuf) -> Self {
         let store = if let Ok(bytes) = fs::read(&path) {
             serde_json::from_slice::<CookieStore>(&bytes).unwrap_or_else(|_| CookieStore::default())
         } else {
             CookieStore::default()
         };
 
-        Ok(Self {
+        Self {
             path,
             jar: Arc::new(CookieStoreMutex::new(store)),
-        })
+        }
     }
 
     pub fn jar(&self) -> Arc<CookieStoreMutex> {

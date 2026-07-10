@@ -95,7 +95,7 @@ fn auth_cb() -> ipatool::Result<String> {
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     let cli = Cli::parse();
-    let tool = IpaTool::new_default().await?;
+    let tool = IpaTool::new_default()?;
     match cli.cmd {
         Command::Auth { cmd } => match cmd {
             AuthCommand::Login {
@@ -111,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
                     with_success_style("Logged in successfully".to_string())
                 );
             }
-            AuthCommand::Info => match tool.account_info().await? {
+            AuthCommand::Info => match tool.account_info()? {
                 Some(acc) => {
                     let msg = format!(
                         "Current account details: email: {}, name: {}",
@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
                 None => error!("{}", with_error_style("No account".to_string())),
             },
             AuthCommand::Revoke => {
-                tool.revoke().await?;
+                tool.revoke()?;
                 println!(r#"{{"success":true}}"#);
             }
         },

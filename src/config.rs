@@ -11,19 +11,19 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn default_from_home() -> Result<Self, IpaToolError> {
-        let home = dirs::home_dir().ok_or_else(|| IpaToolError::NoHomeDir)?;
+    pub fn default_from_home() -> Self {
+        let home = dirs::home_dir().unwrap_or(PathBuf::from("."));
         let config_dir = home.join(".ipatool");
         let cookies_path = config_dir.join("cookies");
 
-        Ok(Self {
+        Self {
             config_dir,
             cookies_path,
             keyring_service: "ipatool-auth.service".into(),
             keyring_account_key: "account".into(),
             // FIXME:needed ?/
             user_agent: crate::constants::DEFAULT_USER_AGENT.into(),
-        })
+        }
     }
 
     pub fn ensure_dirs(&self) -> Result<(), IpaToolError> {
