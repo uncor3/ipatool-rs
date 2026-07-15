@@ -509,7 +509,6 @@ async fn download_item(
         .body(body)
         .send()
         .await?;
-    let status = response.status();
     let body = response.bytes().await?;
     let parsed: DownloadResult = plist::from_bytes(&body)?;
 
