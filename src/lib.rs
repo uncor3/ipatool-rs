@@ -35,11 +35,17 @@ pub struct SearchResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionMetadata {
+    pub display_version: String,
+    pub release_date: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionMetadataResult {
     pub app_id: u64,
     pub bundle_id: Option<String>,
     pub external_version_id: String,
-    pub metadata: serde_json::Value,
+    pub metadata: VersionMetadata,
 }
 
 impl IpaTool {

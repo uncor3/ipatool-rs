@@ -5,6 +5,7 @@ mod download;
 mod login;
 mod purchase;
 mod search;
+mod version_metadata;
 mod versions;
 
 use crate::{
@@ -68,10 +69,7 @@ impl AppStoreClient {
         auth_code_cb: Option<Box<dyn Fn() -> Result<String> + Send + Sync>>,
         auth_code: Option<String>,
     ) -> Result<()> {
-        let mut endpoint = bag::fetch_auth_endpoint(&self.http, &self.guid).await?;
-        if !endpoint.ends_with('/') {
-            endpoint.push('/');
-        }
+        let endpoint = bag::fetch_auth_endpoint(&self.http, &self.guid).await?;
 
         let account = login::login(
             &self.http,
@@ -88,6 +86,23 @@ impl AppStoreClient {
         Ok(())
     }
 
+    async fn refresh_account(&self, account: &Account) -> Result<Account> {
+        let endpoint = bag::fetch_auth_endpoint(&self.http, &self.guid).await?;
+        let refreshed = login::login(
+            &self.http,
+            &self.keyring,
+            &self.guid,
+            endpoint,
+            &account.email,
+            &account.password,
+            None,
+            None,
+        )
+        .await?;
+        self.keyring.set_json(&refreshed)?;
+        Ok(refreshed)
+    }
+
     pub async fn search(&self, term: &str, limit: u32) -> Result<Vec<types::App>> {
         search::search(&self.http, term, limit).await
     }
@@ -101,22 +116,13 @@ impl AppStoreClient {
         let app = self.lookup(bundle_id).await?;
 
         match purchase::purchase(&self.http, &self.guid, &acc, &app).await {
-            Ok(()) => Ok(()),
+            Ok(()) | Err(IpaToolError::LicenseAlreadyExists) => Ok(()),
             Err(IpaToolError::PasswordTokenExpired) => {
-                let endpoint = bag::fetch_auth_endpoint(&self.http, &self.guid).await?;
-                let new_acc = login::login(
-                    &self.http,
-                    &self.keyring,
-                    &self.guid,
-                    endpoint,
-                    &acc.email,
-                    &acc.password,
-                    None,
-                    None,
-                )
-                .await?;
-                self.keyring.set_json(&new_acc)?;
-                purchase::purchase(&self.http, &self.guid, &new_acc, &app).await
+                let new_acc = self.refresh_account(&acc).await?;
+                match purchase::purchase(&self.http, &self.guid, &new_acc, &app).await {
+                    Ok(()) | Err(IpaToolError::LicenseAlreadyExists) => Ok(()),
+                    Err(e) => Err(e),
+                }
             }
             Err(e) => Err(e),
         }
@@ -138,49 +144,42 @@ impl AppStoreClient {
     {
         let mut acc = self.require_account()?;
         let app = self.lookup(&args.bundle_id).await?;
+        let mut refreshed_account = false;
+        let mut attempted_purchase = false;
 
-        match download::download_ipa(
-            &self.http,
-            &self.guid,
-            &mut acc,
-            &app,
-            args.output_path.as_deref(),
-            args.external_version_id.as_deref(),
-            args.acquire_license,
-            &mut progress,
-        )
-        .await
-        {
-            Ok(path) => Ok(path),
-            Err(IpaToolError::PasswordTokenExpired) => {
-                let endpoint = bag::fetch_auth_endpoint(&self.http, &self.guid).await?;
-                let new_acc = login::login(
-                    &self.http,
-                    &self.keyring,
-                    &self.guid,
-                    endpoint,
-                    &acc.email,
-                    &acc.password,
-                    None,
-                    None,
-                )
-                .await?;
-                self.keyring.set_json(&new_acc)?;
-                acc = new_acc;
-
-                download::download_ipa(
-                    &self.http,
-                    &self.guid,
-                    &mut acc,
-                    &app,
-                    args.output_path.as_deref(),
-                    args.external_version_id.as_deref(),
-                    args.acquire_license,
-                    &mut progress,
-                )
-                .await
+        loop {
+            match download::download_ipa(
+                &self.http,
+                &self.guid,
+                &acc,
+                &app,
+                args.output_path.as_deref(),
+                args.external_version_id.as_deref(),
+                &mut progress,
+            )
+            .await
+            {
+                Ok(path) => return Ok(path),
+                Err(IpaToolError::PasswordTokenExpired) if !refreshed_account => {
+                    acc = self.refresh_account(&acc).await?;
+                    refreshed_account = true;
+                }
+                Err(IpaToolError::LicenseRequired)
+                    if args.acquire_license && !attempted_purchase =>
+                {
+                    match purchase::purchase(&self.http, &self.guid, &acc, &app).await {
+                        Ok(()) | Err(IpaToolError::LicenseAlreadyExists) => {
+                            attempted_purchase = true;
+                        }
+                        Err(IpaToolError::PasswordTokenExpired) if !refreshed_account => {
+                            acc = self.refresh_account(&acc).await?;
+                            refreshed_account = true;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+                Err(err) => return Err(err),
             }
-            Err(e) => Err(e),
         }
     }
 
@@ -219,14 +218,13 @@ impl AppStoreClient {
         })
     }
 
-    //FIXME: implment
     pub async fn get_version_metadata(
         &self,
         app_id: Option<u64>,
         bundle_id: Option<&str>,
         external_version_id: &str,
     ) -> Result<crate::VersionMetadataResult> {
-        // let acc = self.require_account()?;
+        let mut acc = self.require_account()?;
         let app = match (app_id, bundle_id) {
             (_, Some(b)) => self.lookup(b).await?,
             (Some(id), None) => types::App {
@@ -239,14 +237,24 @@ impl AppStoreClient {
                 return Err(IpaToolError::MissingAppIdOrBundleId);
             }
         };
+        let metadata =
+            match version_metadata::get(&self.http, &self.guid, &acc, &app, external_version_id)
+                .await
+            {
+                Ok(metadata) => metadata,
+                Err(IpaToolError::PasswordTokenExpired) => {
+                    acc = self.refresh_account(&acc).await?;
+                    version_metadata::get(&self.http, &self.guid, &acc, &app, external_version_id)
+                        .await?
+                }
+                Err(error) => return Err(error),
+            };
+
         Ok(crate::VersionMetadataResult {
             app_id: app.id,
             bundle_id: app.bundle_id.clone(),
             external_version_id: external_version_id.to_string(),
-            metadata: serde_json::json!({"note": "not implemented"}),
+            metadata,
         })
-
-        // download::get_version_metadata(&self.http, &self.guid, &mut acc, &app, external_version_id)
-        //     .await
     }
 }

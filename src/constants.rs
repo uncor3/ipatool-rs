@@ -1,11 +1,15 @@
 pub const FAILURE_TYPE_INVALID_CREDENTIALS: &str = "-5000";
 pub const FAILURE_TYPE_PASSWORD_TOKEN_EXPIRED: &str = "2034";
+pub const FAILURE_TYPE_SIGN_IN_REQUIRED: &str = "2042";
 pub const FAILURE_TYPE_LICENSE_NOT_FOUND: &str = "9610";
 pub const FAILURE_TYPE_TEMPORARILY_UNAVAILABLE: &str = "2059";
+pub const FAILURE_TYPE_LICENSE_ALREADY_EXISTS: &str = "5002";
+pub const FAILURE_TYPE_DEVICE_VERIFICATION_FAILED: &str = "1008";
 
 pub const CUSTOMER_MESSAGE_BAD_LOGIN: &str = "MZFinance.BadLogin.Configurator_message";
 pub const CUSTOMER_MESSAGE_ACCOUNT_DISABLED: &str = "Your account is disabled.";
 pub const CUSTOMER_MESSAGE_SUBSCRIPTION_REQUIRED: &str = "Subscription Required";
+pub const CUSTOMER_MESSAGE_PASSWORD_CHANGED: &str = "Your password has changed.";
 
 // pub const ITUNES_API_DOMAIN: &str = "itunes.apple.com";
 pub const ITUNES_API_SEARCH: &str = "https://itunes.apple.com/search";

@@ -24,6 +24,9 @@ pub enum IpaToolError {
     #[error("license is required")]
     LicenseRequired,
 
+    #[error("license already exists")]
+    LicenseAlreadyExists,
+
     #[error("subscription required")]
     SubscriptionRequired,
 
@@ -71,11 +74,23 @@ pub enum IpaToolError {
     #[error("operation failed with http status {status}")]
     HttpStatus { status: reqwest::StatusCode },
 
+    #[error("rate limited by Apple (HTTP {status}): {message}")]
+    RateLimited { status: u16, message: String },
+
+    #[error("unexpected response from Apple (HTTP {status}): {message}")]
+    UnexpectedResponse { status: u16, message: String },
+
     #[error("missing data: {thing}")]
     MissingData { thing: String },
 
     #[error("missing sinf target")]
     NoSinfTarget,
+
+    #[error("SINF count ({sinfs}) does not match target count ({targets})")]
+    SinfCountMismatch { sinfs: usize, targets: usize },
+
+    #[error("background task failed: {0}")]
+    TaskJoin(#[from] tokio::task::JoinError),
 
     #[error("empty response")]
     EmptyResponse,
