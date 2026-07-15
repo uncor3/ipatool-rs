@@ -11,16 +11,24 @@ use crate::{
 };
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, LOCATION};
 
+fn normalize_auth_endpoint(mut endpoint: String) -> String {
+    if !endpoint.ends_with('/') {
+        endpoint.push('/');
+    }
+    endpoint
+}
+
 pub async fn login(
     http: &Http,
     _keyring: &KeyringStore,
     guid: &str,
-    mut endpoint: String,
+    endpoint: String,
     email: &str,
     password: &str,
     auth_code_cb: Option<Box<dyn Fn() -> Result<String> + Send + Sync>>,
     auth_code: Option<String>,
 ) -> Result<Account> {
+    let mut endpoint = normalize_auth_endpoint(endpoint);
     let mut redirect: Option<String> = None;
     let mut retry = true;
 
@@ -34,7 +42,7 @@ pub async fn login(
         retry = false;
 
         if let Some(r) = redirect.take() {
-            endpoint = r;
+            endpoint = normalize_auth_endpoint(r);
         }
 
         let mut headers = HeaderMap::new();
@@ -56,21 +64,22 @@ pub async fn login(
         ];
 
         let (status, hdrs, body) = http.post_form_bytes(&endpoint, &form, headers).await?;
-        let normalized = normalize_plist_body(&body);
-        let parsed: LoginResult = plist::from_reader_xml(std::io::Cursor::new(normalized))?;
-
-        /*  redirect */
         if status == 302 {
             if let Some(loc) = hdrs.get(LOCATION).and_then(|v| v.to_str().ok()) {
                 redirect = Some(loc.to_string());
                 retry = true;
+                continue;
             } else {
                 return Err(IpaToolError::Unexpected(
                     "redirect without location header".into(),
                 ));
             }
-        } else if attempt == 1
-            && parsed.failure_type.as_deref() == Some(FAILURE_TYPE_INVALID_CREDENTIALS)
+        }
+
+        let normalized = normalize_plist_body(&body);
+        let parsed: LoginResult = plist::from_reader_xml(std::io::Cursor::new(normalized))?;
+
+        if attempt == 1 && parsed.failure_type.as_deref() == Some(FAILURE_TYPE_INVALID_CREDENTIALS)
         {
             retry = true;
         } else if parsed.failure_type.is_none()
