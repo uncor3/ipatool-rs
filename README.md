@@ -1,9 +1,5 @@
 Download IPAs directly from Apple, a port of ipatool by @majd to pure Rust
 
-Currently under active development, expect bugs and missing features. Contributions are welcome!
-
-95% of the orignal ipatool's features are implemented
-
 ```shell
 Usage: ipatool-rs <COMMAND>
 
@@ -26,7 +22,7 @@ It will default to cli feature so use it like this if you want to use it as a li
 
 ```toml
 [dependencies]
-ipatool = { version = "0.1.2", default-features = false }
+ipatool = { version = "0.3.0", default-features = false }
 ```
 
 Not affiliated with Apple
