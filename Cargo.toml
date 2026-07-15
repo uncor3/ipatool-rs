@@ -1,6 +1,6 @@
 [package]
 name = "ipatool"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Download IPAs directly from Apple, a pure Rust port of ipatool."
 license = "MIT"
@@ -11,7 +11,7 @@ authors = ["uncor3 <github.com/uncor3>"]
 [dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
-reqwest = { version = "0.13.2", features = ["json", "stream", "cookies", "rustls", "query", "form"] }
+reqwest = { version = "0.13.2", features = ["json", "stream", "cookies", "rustls", "query", "form", "blocking"] }
 reqwest_cookie_store = "0.10.0"
 cookie_store = { version = "0.22.1", features = ["serde"] }
 
@@ -24,9 +24,10 @@ plist = "1"
 regex = "1"
 url = "2"
 
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 bytes = "1"
 futures-util = "0.3"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 
 clap = { version = "4.5", features = ["derive"] , optional = true }
 dirs = "5"
@@ -45,4 +46,3 @@ cli = ["dep:clap", "dep:indicatif" , "dep:owo-colors"]
 name = "ipatool-rs"
 path = "src/bin/ipatool-rs.rs"
 required-features = ["cli"]
-
