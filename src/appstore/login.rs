@@ -12,10 +12,14 @@ use crate::{
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, LOCATION};
 
 fn normalize_auth_endpoint(mut endpoint: String) -> String {
-    if !endpoint.ends_with('/') {
+    if endpoint.contains("/native/") && !endpoint.ends_with('/') {
         endpoint.push('/');
     }
     endpoint
+}
+
+fn failure_type(parsed: &LoginResult) -> &str {
+    parsed.failure_type.as_deref().unwrap_or("")
 }
 
 pub async fn login(
@@ -78,11 +82,11 @@ pub async fn login(
 
         let normalized = normalize_plist_body(&body);
         let parsed: LoginResult = plist::from_reader_xml(std::io::Cursor::new(normalized))?;
+        let failure_type = failure_type(&parsed);
 
-        if attempt == 1 && parsed.failure_type.as_deref() == Some(FAILURE_TYPE_INVALID_CREDENTIALS)
-        {
+        if attempt == 1 && failure_type == FAILURE_TYPE_INVALID_CREDENTIALS {
             retry = true;
-        } else if parsed.failure_type.is_none()
+        } else if failure_type.is_empty()
             && auth_code.is_empty()
             && parsed.customer_message.as_deref() == Some(CUSTOMER_MESSAGE_BAD_LOGIN)
         {
@@ -91,11 +95,11 @@ pub async fn login(
                 .ok_or_else(|| IpaToolError::AuthCodeRequired)?;
             auth_code = cb().map_err(|_| IpaToolError::AuthCodeRequired)?;
             retry = true;
-        } else if parsed.failure_type.is_none()
+        } else if failure_type.is_empty()
             && parsed.customer_message.as_deref() == Some(CUSTOMER_MESSAGE_ACCOUNT_DISABLED)
         {
             return Err(IpaToolError::Unexpected("account is disabled".into()));
-        } else if parsed.failure_type.is_some() {
+        } else if !failure_type.is_empty() {
             return Err(IpaToolError::Unexpected(
                 parsed
                     .customer_message
