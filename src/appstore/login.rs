@@ -1,7 +1,7 @@
 use crate::{
     appstore::types::{Account, LoginResult},
     constants::{
-        CUSTOMER_MESSAGE_ACCOUNT_DISABLED, CUSTOMER_MESSAGE_BAD_LOGIN,
+        APPSTORE_AUTH_URL, CUSTOMER_MESSAGE_ACCOUNT_DISABLED, CUSTOMER_MESSAGE_BAD_LOGIN,
         FAILURE_TYPE_INVALID_CREDENTIALS, HEADER_POD, HEADER_STOREFRONT, MAX_LOGIN_ATTEMPTS,
     },
     error::{IpaToolError, Result},
@@ -9,6 +9,7 @@ use crate::{
     storage::keyring::KeyringStore,
     util::normalize_plist_body,
 };
+use ::log::info;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, LOCATION};
 
 fn normalize_auth_endpoint(mut endpoint: String) -> String {
@@ -20,6 +21,37 @@ fn normalize_auth_endpoint(mut endpoint: String) -> String {
 
 fn failure_type(parsed: &LoginResult) -> &str {
     parsed.failure_type.as_deref().unwrap_or("")
+}
+
+fn request_attempt(attempt: u32, following_redirect: bool) -> u32 {
+    if following_redirect { 1 } else { attempt }
+}
+
+fn looks_like_plist(body: &[u8]) -> bool {
+    let body = String::from_utf8_lossy(body).to_ascii_lowercase();
+    body.starts_with("bplist")
+        || ["<?xml", "<plist", "<dict", "<key"]
+            .iter()
+            .any(|marker| body.contains(marker))
+}
+
+fn response_message(body: &[u8]) -> String {
+    let message = String::from_utf8_lossy(body)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if message.is_empty() {
+        "empty or non-plist body".to_string()
+    } else {
+        message.chars().take(200).collect()
+    }
+}
+
+fn should_retry_with_legacy(endpoint: &str, status: u16, body: &[u8]) -> bool {
+    endpoint.contains("/native/")
+        && matches!(status, 204 | 403 | 404 | 503)
+        && !looks_like_plist(body)
 }
 
 pub async fn login(
@@ -39,15 +71,16 @@ pub async fn login(
     let mut last: Option<(u16, HeaderMap, LoginResult)> = None;
     let mut auth_code = auth_code.unwrap_or("".to_string());
 
-    for attempt in 1..=MAX_LOGIN_ATTEMPTS {
-        if !retry {
-            break;
-        }
+    let mut attempt = 1;
+    while retry && attempt <= MAX_LOGIN_ATTEMPTS {
         retry = false;
 
+        let following_redirect = redirect.is_some();
         if let Some(r) = redirect.take() {
             endpoint = normalize_auth_endpoint(r);
         }
+
+        let current_attempt = request_attempt(attempt, following_redirect);
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -57,7 +90,7 @@ pub async fn login(
 
         let form = vec![
             ("appleId".to_string(), email.to_string()),
-            ("attempt".to_string(), attempt.to_string()),
+            ("attempt".to_string(), current_attempt.to_string()),
             ("guid".to_string(), guid.to_string()),
             (
                 "password".to_string(),
@@ -68,10 +101,28 @@ pub async fn login(
         ];
 
         let (status, hdrs, body) = http.post_form_bytes(&endpoint, &form, headers).await?;
+
+        if should_retry_with_legacy(&endpoint, status, &body) {
+            info!("Retrying with legacy endpoint: {}", endpoint);
+            endpoint = APPSTORE_AUTH_URL.to_string();
+            redirect = None;
+            attempt = 1;
+            retry = true;
+            continue;
+        }
+
+        if status == 429 {
+            return Err(IpaToolError::RateLimited {
+                status,
+                message: response_message(&body),
+            });
+        }
+
         if status == 302 {
             if let Some(loc) = hdrs.get(LOCATION).and_then(|v| v.to_str().ok()) {
                 redirect = Some(loc.to_string());
                 retry = true;
+                attempt += 1;
                 continue;
             } else {
                 return Err(IpaToolError::Unexpected(
@@ -81,6 +132,12 @@ pub async fn login(
         }
 
         let normalized = normalize_plist_body(&body);
+        if !looks_like_plist(&normalized) {
+            return Err(IpaToolError::UnexpectedResponse {
+                status,
+                message: response_message(&body),
+            });
+        }
         let parsed: LoginResult = plist::from_reader_xml(std::io::Cursor::new(normalized))?;
         let failure_type = failure_type(&parsed);
 
@@ -121,6 +178,12 @@ pub async fn login(
         if !retry {
             break;
         }
+
+        attempt += 1;
+    }
+
+    if retry {
+        return Err(IpaToolError::Unexpected("too many login attempts".into()));
     }
 
     let (_status, hdrs, parsed) =
@@ -171,4 +234,50 @@ pub async fn login(
         password: password.to_string(),
         pod,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_only_native_authentication_endpoints() {
+        assert_eq!(
+            normalize_auth_endpoint("https://auth.itunes.apple.com/auth/v1/native/fast".into()),
+            "https://auth.itunes.apple.com/auth/v1/native/fast/"
+        );
+        assert_eq!(
+            normalize_auth_endpoint(APPSTORE_AUTH_URL.into()),
+            APPSTORE_AUTH_URL
+        );
+    }
+
+    #[test]
+    fn falls_back_for_expected_empty_native_responses() {
+        for status in [204, 403, 404, 503] {
+            assert!(should_retry_with_legacy(
+                "https://auth.itunes.apple.com/auth/v1/native/fast/",
+                status,
+                b""
+            ));
+        }
+
+        assert!(!should_retry_with_legacy(APPSTORE_AUTH_URL, 204, b""));
+        assert!(!should_retry_with_legacy(
+            "https://auth.itunes.apple.com/auth/v1/native/fast/",
+            403,
+            b"<plist><dict/></plist>"
+        ));
+        assert!(!should_retry_with_legacy(
+            "https://auth.itunes.apple.com/auth/v1/native/fast/",
+            500,
+            b""
+        ));
+    }
+
+    #[test]
+    fn preserves_first_attempt_for_store_pod_redirects() {
+        assert_eq!(request_attempt(2, true), 1);
+        assert_eq!(request_attempt(2, false), 2);
+    }
 }
