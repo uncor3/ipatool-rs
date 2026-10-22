@@ -9,38 +9,68 @@ keywords = ["ipatool", "ios", "apple", "ipa", "downloader", ]
 authors = ["uncor3 <github.com/uncor3>"]
 
 [dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
-reqwest = { version = "0.13.2", features = ["json", "stream", "cookies", "rustls", "query", "form", "blocking"] }
-reqwest_cookie_store = "0.10.0"
-cookie_store = { version = "0.22.1", features = ["serde"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies", "stream", "query"] }
+reqwest_cookie_store = "0.10"
+cookie_store = "0.22"
 
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service" ] }
+keyring = { version = "3", default-features = false }
+jose4rs = "0.6"
+secrecy = "0.10"
+zeroize = "1"
+fs2 = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 
 plist = "1"
-regex = "1"
 url = "2"
 
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 bytes = "1"
 futures-util = "0.3"
-time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 
 clap = { version = "4.5", features = ["derive"] , optional = true }
+rpassword = { version = "7", optional = true }
 dirs = "5"
-mac_address = "1.1.8"
-indicatif = {version = "0.18.4" , optional = true }
-log = "0.4.29"
-env_logger = "0.11.10"
-owo-colors = {version = "4.3.0" , optional = true }
+mac_address = "1"
+indicatif = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", optional = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+base64 = "0.22"
+phf = { version = "0.11", features = ["macros"] }
+sha2 = "0.10"
+quick-xml = "0.37"
+bzip2 = "0.6"
+libloading = "0.8"
+sevenz-rust2 = "0.22"
+ruzstd = "0.9"
+tar = "0.4"
+getrandom = "0.3"
+httpdate = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service = { version = "4.0.1", features = ["crypto-rust"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
 
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:indicatif" , "dep:owo-colors"]
+cli = ["dep:clap", "dep:tracing-subscriber", "dep:rpassword"]
 
 [[bin]]
 name = "ipatool-rs"

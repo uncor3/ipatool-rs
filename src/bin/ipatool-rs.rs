@@ -1,10 +1,8 @@
 use clap::{Parser, Subcommand};
-use env_logger::Env;
 use indicatif::{ProgressBar, ProgressStyle};
-use ipatool::util::{with_error_style, with_success_style};
-use ipatool::{DownloadArgs, IpaTool};
-use log::{error, info};
+use ipatool::{CredentialBackend, DownloadArgs, IpaTool, Platform};
 use std::io;
+use zeroize::Zeroize;
 
 #[derive(Parser)]
 #[command(
@@ -19,6 +17,8 @@ use std::io;
     version
 )]
 struct Cli {
+    #[arg(long, global = true)]
+    keychain_passphrase: Option<String>,
     #[command(subcommand)]
     cmd: Command,
 }
@@ -31,6 +31,8 @@ enum Command {
     },
     Search {
         term: String,
+        #[arg(long, default_value = "iphone")]
+        platform: Platform,
         #[arg(long, default_value_t = 5)]
         limit: u32,
     },
@@ -39,8 +41,15 @@ enum Command {
         bundle_identifier: String,
     },
     Download {
-        #[arg(long)]
-        bundle_identifier: String,
+        #[arg(long, required_unless_present = "app_id")]
+        bundle_identifier: Option<String>,
+        #[arg(
+            long,
+            help = "Numeric App Store ID; also supports owned, delisted apps"
+        )]
+        app_id: Option<i64>,
+        #[arg(long, default_value = "iphone")]
+        platform: Platform,
         #[arg(long)]
         output: Option<String>,
         #[arg(long)]
@@ -83,9 +92,7 @@ fn auth_cb() -> ipatool::Result<String> {
 
     println!("Enter 2FA Code:");
 
-    io::stdin().read_line(&mut input).map_err(|e| {
-        ipatool::error::IpaToolError::Unexpected(format!("Failed to read input: {}", e))
-    })?;
+    io::stdin().read_line(&mut input)?;
 
     //trim should be fine
     Ok(input.trim().to_string())
@@ -93,9 +100,41 @@ fn auth_cb() -> ipatool::Result<String> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
-    let tool = IpaTool::new_default()?;
+    let login_will_write_account = matches!(
+        &cli.cmd,
+        Command::Auth {
+            cmd: AuthCommand::Login { .. }
+        }
+    );
+    let tool = IpaTool::new_default_with_passphrase(cli.keychain_passphrase.clone())?;
+    if tool.credential_backend() == CredentialBackend::EncryptedFile
+        && cli.keychain_passphrase.is_none()
+        && tool.requires_keyring_passphrase()
+    {
+        let passphrase = rpassword::prompt_password(
+            "Enter passphrase to unlock ~/.ipatool (separate from your Apple Account password): ",
+        )?;
+        tool.set_keyring_passphrase(passphrase)?;
+    } else if tool.credential_backend() == CredentialBackend::EncryptedFile
+        && cli.keychain_passphrase.is_none()
+        && login_will_write_account
+    {
+        let passphrase = loop {
+            let first = rpassword::prompt_password(
+                "Create a passphrase for ~/.ipatool (separate from your Apple Account password): ",
+            )?;
+            let mut confirmation = rpassword::prompt_password("Confirm keyring passphrase: ")?;
+            let matches = first == confirmation;
+            confirmation.zeroize();
+            if matches {
+                break first;
+            }
+            eprintln!("Passphrases do not match. Try again.");
+        };
+        tool.set_keyring_passphrase(passphrase)?;
+    }
     match cli.cmd {
         Command::Auth { cmd } => match cmd {
             AuthCommand::Login {
@@ -106,10 +145,7 @@ async fn main() -> anyhow::Result<()> {
                 tool.login(&email, &password, Some(Box::new(auth_cb)), auth_code)
                     .await?;
 
-                info!(
-                    "{}",
-                    with_success_style("Logged in successfully".to_string())
-                );
+                eprintln!("Logged in successfully");
             }
             AuthCommand::Info => match tool.account_info()? {
                 Some(acc) => {
@@ -117,17 +153,21 @@ async fn main() -> anyhow::Result<()> {
                         "Current account details: email: {}, name: {}",
                         acc.email, acc.name
                     );
-                    info!("{}", with_success_style(msg));
+                    eprintln!("{msg}");
                 }
-                None => error!("{}", with_error_style("No account".to_string())),
+                None => eprintln!("No account"),
             },
             AuthCommand::Revoke => {
                 tool.revoke()?;
                 println!(r#"{{"success":true}}"#);
             }
         },
-        Command::Search { term, limit } => {
-            let out = tool.search(&term, limit).await?;
+        Command::Search {
+            term,
+            limit,
+            platform,
+        } => {
+            let out = tool.search_for_platform(&term, limit, platform).await?;
             println!("{}", serde_json::to_string(&out)?);
         }
         Command::Purchase { bundle_identifier } => {
@@ -136,10 +176,12 @@ async fn main() -> anyhow::Result<()> {
                 "Purchased app with bundle identifier: {}",
                 bundle_identifier
             );
-            info!("{}", with_success_style(msg));
+            eprintln!("{msg}");
         }
         Command::Download {
             bundle_identifier,
+            app_id,
+            platform,
             output,
             external_version_id,
             purchase,
@@ -149,38 +191,42 @@ async fn main() -> anyhow::Result<()> {
             pb.set_message("downloading...");
 
             let pb_cb = pb.clone();
-            let out = tool
-                .download_with_progress(
-                    DownloadArgs {
-                        bundle_id: bundle_identifier,
-                        output_path: output,
-                        external_version_id,
-                        acquire_license: purchase,
-                    },
-                    move |downloaded, total| {
-                        if let Some(t) = total {
-                            if pb_cb.length() != Some(t) {
-                                pb_cb.set_length(t);
-                                pb_cb.set_style(
+            let progress = move |downloaded, total| {
+                if let Some(t) = total {
+                    if pb_cb.length() != Some(t) {
+                        pb_cb.set_length(t);
+                        pb_cb.set_style(
                                     ProgressStyle::with_template(
                                         "{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})",
                                     )
                                     .unwrap(),
                                 );
-                            }
-                            pb_cb.set_position(downloaded);
-                        } else {
-                            pb_cb.set_style(
-                                ProgressStyle::with_template(
-                                    "{spinner:.green} {bytes} downloaded",
-                                )
-                                .unwrap(),
-                            );
-                            pb_cb.set_position(downloaded);
-                        }
-                    },
-                )
-                .await?;
+                    }
+                    pb_cb.set_position(downloaded);
+                } else {
+                    pb_cb.set_style(
+                        ProgressStyle::with_template("{spinner:.green} {bytes} downloaded")
+                            .unwrap(),
+                    );
+                    pb_cb.set_position(downloaded);
+                }
+            };
+            let args = DownloadArgs {
+                bundle_id: bundle_identifier.unwrap_or_default(),
+                output_path: output,
+                external_version_id,
+                acquire_license: purchase,
+            };
+            let out = match app_id {
+                Some(app_id) => {
+                    tool.download_by_id_for_platform_with_progress(app_id, args, platform, progress)
+                        .await?
+                }
+                None => {
+                    tool.download_for_platform_with_progress(args, platform, progress)
+                        .await?
+                }
+            };
 
             pb.finish_and_clear();
             println!("{}", serde_json::to_string(&out)?);
