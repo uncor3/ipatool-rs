@@ -11,7 +11,7 @@ pub async fn lookup(
     country: &str,
     platform: Platform,
 ) -> Result<Option<App>, ClientError> {
-    let resp = client
+    let request = client
         .http()
         .get(LOOKUP_URL)
         .query(&[
@@ -20,7 +20,15 @@ pub async fn lookup(
             ("entity", platform.lookup_entity()),
             ("limit", "1"),
         ])
-        .send()
+        .build()?;
+    let resp = client
+        .store_send(
+            "lookup",
+            request,
+            None,
+            None,
+            crate::store::RequestOptions::JSON,
+        )
         .await?;
 
     let body = resp.text().await?;

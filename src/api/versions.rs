@@ -51,14 +51,22 @@ pub async fn list_versions(
     plist::to_writer_xml(&mut body_bytes, &body)
         .map_err(|e| ClientError::UnexpectedResponse(format!("plist serialize: {e}")))?;
 
-    let resp = client
+    let request = client
         .http()
         .post(&url)
         .header("Content-Type", "application/x-apple-plist")
         .header("iCloud-DSID", &account.directory_services_id)
         .header("X-Dsid", &account.directory_services_id)
         .body(body_bytes)
-        .send()
+        .build()?;
+    let resp = client
+        .store_send(
+            "download",
+            request,
+            Some(body),
+            None,
+            crate::store::RequestOptions::PLIST,
+        )
         .await?;
 
     let status = resp.status();
@@ -189,7 +197,7 @@ pub async fn get_version_metadata(
         crate::api::download::get_download_info(client, app_id, account, Some(external_version_id))
             .await?;
 
-    let info = crate::ipa::partial_zip::read_remote_info_plist(client.http(), &item.url)
+    let info = crate::ipa::partial_zip::read_remote_info_plist(client, &item.url)
         .await
         .map_err(|e| {
             ClientError::UnexpectedResponse(format!("failed to read version metadata: {e}"))

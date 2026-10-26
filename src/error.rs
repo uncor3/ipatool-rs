@@ -108,6 +108,10 @@ impl StoreError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
+    #[error("Store HTTP response headers timed out")]
+    StoreHeaderTimeout,
+    #[error("Store framework error {domain}/{code}")]
+    StoreFramework { domain: String, code: i64 },
     #[error("iOS catalog lookup returned HTTP 404")]
     IOSCatalogAppNotFound,
     #[error(transparent)]
@@ -227,6 +231,12 @@ pub enum IpaToolError {
 impl From<ClientError> for IpaToolError {
     fn from(error: ClientError) -> Self {
         match error {
+            ClientError::StoreHeaderTimeout => {
+                Self::UnexpectedResponse("Store HTTP response headers timed out".into())
+            }
+            ClientError::StoreFramework { domain, code } => {
+                Self::UnexpectedResponse(format!("Store framework error {domain}/{code}"))
+            }
             ClientError::IOSCatalogAppNotFound => Self::AppNotFound("iOS catalog".into()),
             ClientError::Http(error) => Self::Http(error),
             ClientError::PlistDe(error) => Self::Plist(error),

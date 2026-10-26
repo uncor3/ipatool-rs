@@ -9,9 +9,9 @@ keywords = ["ipatool", "ios", "apple", "ipa", "downloader", ]
 authors = ["uncor3 <github.com/uncor3>"]
 
 [dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies", "stream", "query"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies", "stream", "query", "blocking"] }
 reqwest_cookie_store = "0.10"
 cookie_store = "0.22"
 
@@ -43,6 +43,14 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 base64 = "0.22"
 phf = { version = "0.11", features = ["macros"] }
 sha2 = "0.10"
+aes = "0.8"
+ctr = "0.9"
+hkdf = "0.12"
+hmac = "0.12"
+hpke = { version = "0.13", default-features = false, features = ["std", "p256"] }
+p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+lzfse_rust = "0.2"
+unicode-normalization = "0.1"
 quick-xml = "0.37"
 bzip2 = "0.6"
 libloading = "0.8"

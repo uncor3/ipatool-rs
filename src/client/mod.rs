@@ -5,6 +5,7 @@ use crate::error::ClientError;
 use crate::guid::MachineIdentity;
 use crate::model::Account;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 const USER_AGENT: &str =
     "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6";
@@ -22,6 +23,12 @@ fn is_auth_endpoint(url: &reqwest::Url) -> bool {
 
 pub struct AppleClient {
     http: reqwest::Client,
+    protected_http: reqwest::Client,
+    pub(crate) auth_http: reqwest::Client,
+    pub(crate) credentials: Option<Arc<crate::credential::CredentialStore>>,
+    pub(crate) kbsync: Mutex<Option<crate::api::kbsync::CacheEntry>>,
+    pub(crate) store_bag: Mutex<Option<plist::Dictionary>>,
+    pub(crate) store_image: tokio::sync::OnceCell<Arc<Vec<u8>>>,
     cookie_store: cookie_jar::GoCookieJar,
     machine: MachineIdentity,
     /// Where the SAP runtime keeps the Apple frameworks and the emulator it
@@ -51,8 +58,29 @@ impl AppleClient {
             }))
             .build()?;
 
+        let protected_http = reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .cookie_provider(cookie_store.provider())
+            .redirect(reqwest::redirect::Policy::none())
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .build()?;
+
+        let auth_http = reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .cookie_provider(cookie_store.provider())
+            .redirect(reqwest::redirect::Policy::none())
+            .pool_max_idle_per_host(0)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .build()?;
+
         Ok(Self {
             http,
+            protected_http,
+            auth_http,
+            credentials: None,
+            kbsync: Mutex::new(None),
+            store_bag: Mutex::new(None),
+            store_image: tokio::sync::OnceCell::new(),
             cookie_store,
             machine,
             cache_dir: cache_dir.into(),
@@ -83,6 +111,10 @@ impl AppleClient {
 
     pub fn http(&self) -> &reqwest::Client {
         &self.http
+    }
+
+    pub(crate) fn protected_http(&self) -> &reqwest::Client {
+        &self.protected_http
     }
 
     pub fn save_cookies(&self, path: &Path) -> Result<(), ClientError> {

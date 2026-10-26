@@ -12,7 +12,7 @@ pub async fn search(
     platform: Platform,
     limit: u32,
 ) -> Result<Vec<App>, ClientError> {
-    let resp = client
+    let request = client
         .http()
         .get(SEARCH_URL)
         .query(&[
@@ -21,7 +21,15 @@ pub async fn search(
             ("entity", platform.search_entity()),
             ("limit", &limit.to_string()),
         ])
-        .send()
+        .build()?;
+    let resp = client
+        .store_send(
+            "search",
+            request,
+            None,
+            None,
+            crate::store::RequestOptions::JSON,
+        )
         .await?;
 
     let body = resp.text().await?;

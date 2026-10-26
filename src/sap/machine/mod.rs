@@ -5,11 +5,13 @@
 //! their imports pointed at [`shims`], and driven through five entry points
 //! whose names are obfuscated in the binary.
 
+pub mod kbsync;
+mod macos27;
 pub mod shims;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use shims::Shims;
 
@@ -64,9 +66,11 @@ struct EntryPoints {
 }
 
 struct Inner {
+    architecture: unicorn::Architecture,
     engine: Engine,
     entry: EntryPoints,
     scratch_cursor: u64,
+    deadline: Option<Instant>,
 }
 
 pub struct Machine {
@@ -85,9 +89,24 @@ impl Machine {
         cache_dir: &std::path::Path,
         bundle: &Bundle,
     ) -> Result<Self, ClientError> {
+        Self::open_with_store_agent(client, cache_dir, bundle, None).await
+    }
+
+    async fn open_with_store_agent(
+        client: &AppleClient,
+        cache_dir: &std::path::Path,
+        bundle: &Bundle,
+        store_agent: Option<&[u8]>,
+    ) -> Result<Self, ClientError> {
         let mut core_fp = Image::open("CoreFP", &bundle.core_fp)?;
         let mut commerce_core = Image::open("CommerceCore", &bundle.commerce_core)?;
         let mut commerce_kit = Image::open("CommerceKit", &bundle.commerce_kit)?;
+        let mut store_agent = store_agent
+            .map(|data| {
+                crate::sap::assets::verify_store_agent(data)?;
+                Image::open("StoreAgent", data)
+            })
+            .transpose()?;
 
         // Resolved before anything is mapped: a missing symbol should fail
         // here rather than midway through building the address space.
@@ -141,6 +160,19 @@ impl Machine {
         }
 
         let mut shims = Shims::new(&engine.guest(), core_exports, bundle.core_fp_icxs.clone())?;
+        if store_agent.is_some() {
+            shims.add_aliases(
+                &[
+                    "_pthread_rwlock_rdlock",
+                    "_pthread_rwlock_rdlock$UNIX2003",
+                    "_pthread_mutex_init",
+                    "_pthread_mutex_destroy",
+                    "_pthread_rwlock_destroy",
+                ],
+                shims::Shim::ReturnZero,
+                &engine.guest(),
+            )?;
+        }
 
         // Imports resolve to a sibling image's export where one exists, and to
         // a shim stub otherwise.
@@ -157,6 +189,13 @@ impl Machine {
                     None => shims.resolve(name, &guest),
                 })?;
 
+                image.load(&guest)?;
+            }
+            if let Some(image) = store_agent.as_mut() {
+                image.relocate(kbsync::STORE_AGENT_BASE, |name| match exports.get(name) {
+                    Some(address) => Ok(*address),
+                    None => shims.resolve(name, &guest),
+                })?;
                 image.load(&guest)?;
             }
         }
@@ -179,9 +218,11 @@ impl Machine {
 
         Ok(Self {
             inner: Mutex::new(Inner {
+                architecture: unicorn::Architecture::X86_64,
                 engine,
                 entry,
                 scratch_cursor: 0,
+                deadline: None,
             }),
         })
     }
@@ -202,7 +243,9 @@ impl Inner {
 
         const REGISTERS: [i32; 6] = [reg::RDI, reg::RSI, reg::RDX, reg::RCX, reg::R8, reg::R9];
 
-        {
+        if self.architecture == unicorn::Architecture::Arm64 {
+            macos27::prepare_call(&self.engine.guest(), arguments)?;
+        } else {
             let guest = self.engine.guest();
 
             for (index, register) in REGISTERS.iter().enumerate() {
@@ -231,15 +274,32 @@ impl Inner {
             guest.reg_write(reg::RSP, stack)?;
         }
 
+        let timeout = match self.deadline {
+            Some(deadline) => deadline
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| ClientError::Sap("StoreAgent execution deadline exceeded".into()))?
+                .min(Duration::from_secs(60)),
+            None if self.architecture == unicorn::Architecture::Arm64 => Duration::from_secs(60),
+            None => CALL_TIMEOUT,
+        };
         self.engine.start(
             function,
             RETURN_ADDRESS,
-            CALL_TIMEOUT,
-            CALL_INSTRUCTION_LIMIT,
+            timeout,
+            if self.deadline.is_some() || self.architecture == unicorn::Architecture::Arm64 {
+                0
+            } else {
+                CALL_INSTRUCTION_LIMIT
+            },
         )?;
 
         let guest = self.engine.guest();
-        let instruction = guest.reg_read(reg::RIP)?;
+        let instruction = guest.reg_read(if self.architecture == unicorn::Architecture::Arm64 {
+            unicorn::arm64_reg::PC
+        } else {
+            reg::RIP
+        })?;
 
         if instruction != RETURN_ADDRESS {
             return Err(ClientError::Sap(format!(
@@ -247,7 +307,11 @@ impl Inner {
             )));
         }
 
-        guest.reg_read(reg::RAX)
+        guest.reg_read(if self.architecture == unicorn::Architecture::Arm64 {
+            unicorn::arm64_reg::X0
+        } else {
+            reg::RAX
+        })
     }
 
     fn begin_call(&mut self) {

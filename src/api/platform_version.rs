@@ -86,7 +86,7 @@ pub(crate) async fn lookup_latest_version(
         }
     };
     for &catalog in catalogs {
-        let response = client
+        let request = client
             .http()
             .get(PLATFORM_LOOKUP_URL)
             .timeout(std::time::Duration::from_secs(30))
@@ -99,7 +99,15 @@ pub(crate) async fn lookup_latest_version(
                 ("cc", country.as_str()),
                 ("l", "en"),
             ])
-            .send()
+            .build()?;
+        let response = client
+            .store_send(
+                "lookup",
+                request,
+                None,
+                None,
+                crate::store::RequestOptions::JSON,
+            )
             .await?;
 
         let status = response.status();
@@ -150,13 +158,21 @@ pub(crate) async fn lookup_latest_version(
             "platform version lookup returned no offers".into(),
         ));
     }
-    let response = client
+    let request = client
         .http()
         .get(format!(
             "https://apps.apple.com/api/apps/v1/catalog/{country}/apps/{app_id}?platform={platform}"
         ))
         .timeout(std::time::Duration::from_secs(30))
-        .send()
+        .build()?;
+    let response = client
+        .store_send(
+            "lookup",
+            request,
+            None,
+            None,
+            crate::store::RequestOptions::JSON,
+        )
         .await?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(ClientError::IOSCatalogAppNotFound);

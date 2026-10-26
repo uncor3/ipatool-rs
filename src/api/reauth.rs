@@ -24,7 +24,7 @@ pub async fn reauthenticate(
         password,
         None,
         &bag.auth_endpoint,
-        Some(&signer),
+        Some(std::sync::Arc::new(signer)),
     )
     .await?;
 

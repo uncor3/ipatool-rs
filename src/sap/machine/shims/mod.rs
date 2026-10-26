@@ -12,7 +12,7 @@ pub mod platform;
 use std::collections::HashMap;
 
 use crate::error::ClientError;
-use crate::sap::unicorn::{Guest, reg};
+use crate::sap::unicorn::{Architecture, Guest, arm64_reg, reg};
 
 /// Base of the region holding stubs and synthetic data symbols.
 pub const SHIM_BASE: u64 = 0x0000_2000_0000_0000;
@@ -43,6 +43,10 @@ pub enum Shim {
     Calloc,
     Realloc,
     Free,
+    Mmap,
+    Munmap,
+    VmAllocate,
+    VmDeallocate,
     Memmove,
     Memset,
     Bzero,
@@ -72,6 +76,12 @@ pub enum Shim {
     ObjcMsgSend,
     Open,
     PthreadOnce,
+    DispatchOnce,
+    CallbackComplete,
+    ReturnUnchanged,
+    Sysconf,
+    Basename,
+    BootstrapLookup,
     Read,
     Sysctlbyname,
 
@@ -93,6 +103,7 @@ pub struct FreeBlock {
 }
 
 pub struct Shims {
+    pub callback_returns: Vec<u64>,
     entries: HashMap<u64, Shim>,
     symbols: HashMap<String, u64>,
     code_cursor: u64,
@@ -120,6 +131,7 @@ impl Shims {
         guest.mem_map(SHIM_BASE, SHIM_SIZE)?;
 
         let mut shims = Self {
+            callback_returns: Vec::new(),
             entries: HashMap::new(),
             symbols: HashMap::new(),
             code_cursor: SHIM_BASE,
@@ -136,6 +148,9 @@ impl Shims {
 
         memory::register(&mut shims, guest)?;
         platform::register(&mut shims, guest)?;
+        if guest.architecture() == Architecture::Arm64 {
+            shims.add_function("callback.complete", Shim::CallbackComplete, guest)?;
+        }
 
         Ok(shims)
     }
@@ -179,7 +194,14 @@ impl Shims {
         let address = self.code_cursor;
         self.code_cursor += SLOT_SIZE;
 
-        guest.mem_write(address, &[RET])?;
+        guest.mem_write(
+            address,
+            if guest.architecture() == Architecture::Arm64 {
+                &[0xc0, 0x03, 0x5f, 0xd6]
+            } else {
+                &[RET]
+            },
+        )?;
 
         self.entries.insert(address, shim);
         self.symbols.insert(name.to_string(), address);
@@ -235,6 +257,16 @@ pub fn dispatch(shims: &mut Shims, guest: Guest<'_>, address: u64) -> Result<(),
 
 /// Reads the `index`th argument of a System V call.
 pub fn argument(guest: &Guest<'_>, index: usize) -> Result<u64, ClientError> {
+    if guest.architecture() == Architecture::Arm64 {
+        return if index < 8 {
+            guest.reg_read(arm64_reg::X0 + index as i32)
+        } else {
+            read_u64(
+                guest,
+                guest.reg_read(arm64_reg::SP)? + (index as u64 - 8) * 8,
+            )
+        };
+    }
     const REGISTERS: [i32; 6] = [reg::RDI, reg::RSI, reg::RDX, reg::RCX, reg::R8, reg::R9];
 
     if let Some(register) = REGISTERS.get(index) {
@@ -250,7 +282,14 @@ pub fn argument(guest: &Guest<'_>, index: usize) -> Result<u64, ClientError> {
 }
 
 pub fn set_result(guest: &Guest<'_>, value: u64) -> Result<(), ClientError> {
-    guest.reg_write(reg::RAX, value)
+    guest.reg_write(
+        if guest.architecture() == Architecture::Arm64 {
+            arm64_reg::X0
+        } else {
+            reg::RAX
+        },
+        value,
+    )
 }
 
 pub fn read_u32(guest: &Guest<'_>, address: u64) -> Result<u32, ClientError> {

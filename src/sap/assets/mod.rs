@@ -1,10 +1,11 @@
 //! Acquisition of the Apple binaries the SAP state machine is implemented by.
 //!
-//! The signing code is Apple's, not ours, and is not redistributed: it is
-//! extracted at runtime from a public OS X 10.9 update package and verified
-//! against known digests before use.
+//! Production macOS 27 assets are extracted from a pinned public IPSW by
+//! [`macos27`], verified against Go's exact sizes and digests, and cached under
+//! the platform cache directory. Apple framework files are not bundled here.
 //!
-//! Downloading all 1.27 GB would be wasteful, so the package is read by range
+//! The historical OS X 10.9 extractor below remains available for legacy tests.
+//! Downloading its entire 1.27 GB package would be wasteful, so it is read by range
 //! request. The `Payload` entry is stored in the archive uncompressed because it
 //! is itself one long bzip2 stream, which makes it seekable at block
 //! boundaries: starting at a known block offset and prepending a bzip2 stream
@@ -12,6 +13,12 @@
 //! transferred.
 
 pub mod cpio;
+pub mod aea;
+pub mod apfs;
+mod compression;
+pub mod dyld;
+pub mod macos27;
+pub mod remote;
 pub mod xar;
 
 use std::collections::HashMap;
@@ -81,6 +88,43 @@ pub struct Bundle {
     pub core_fp_icxs: Vec<u8>,
 }
 
+const STORE_AGENT: FileSpec = FileSpec {
+    name: "storeagent",
+    path: "CommerceKit.framework/Versions/A/Resources/storeagent",
+    size: 2_580_176,
+    digest: "70ce036f9dbcbc04db9511ebd08de0dd3cbc35ccc9d44b089c90170cb5453c59",
+};
+
+pub async fn load_store_agent(
+    client: &AppleClient,
+    directory: &Path,
+) -> Result<Vec<u8>, ClientError> {
+    let path = directory.join("storeagent");
+    if let Ok(data) = std::fs::read(&path)
+        && verify_store_agent(&data).is_ok()
+    {
+        return Ok(data);
+    }
+    let mut found = download_files(client, &[STORE_AGENT]).await?;
+    let data = found
+        .remove("storeagent")
+        .ok_or_else(|| ClientError::Sap("StoreAgent missing".into()))?;
+    verify_store_agent(&data)?;
+    if std::fs::create_dir_all(directory).is_ok() {
+        let _ = std::fs::write(path, &data);
+    }
+    Ok(data)
+}
+
+pub fn verify_store_agent(data: &[u8]) -> Result<(), ClientError> {
+    if data.len() != STORE_AGENT.size || hex_digest(data) != STORE_AGENT.digest {
+        return Err(ClientError::Sap(
+            "StoreAgent failed profile integrity verification".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Returns the bundle from `cache_dir`, downloading and caching it on a miss.
 pub async fn load(client: &AppleClient, cache_dir: &Path) -> Result<Bundle, ClientError> {
     match read_cache(cache_dir) {
@@ -103,6 +147,16 @@ pub async fn load(client: &AppleClient, cache_dir: &Path) -> Result<Bundle, Clie
 }
 
 pub async fn download(client: &AppleClient) -> Result<Bundle, ClientError> {
+    let found = download_files(client, REQUIRED).await?;
+    let bundle = assemble(found)?;
+    validate(&bundle)?;
+    Ok(bundle)
+}
+
+async fn download_files(
+    client: &AppleClient,
+    specs: &[FileSpec],
+) -> Result<HashMap<&'static str, Vec<u8>>, ClientError> {
     let header = xar::parse_header(&range(client, 0, xar::HEADER_LEN as u64 - 1).await?)?;
 
     let toc = xar::inflate_toc(
@@ -128,7 +182,7 @@ pub async fn download(client: &AppleClient) -> Result<Bundle, ClientError> {
         )));
     }
 
-    let wanted: HashMap<String, &FileSpec> = REQUIRED
+    let wanted: HashMap<String, &FileSpec> = specs
         .iter()
         .map(|spec| (format!("{FRAMEWORKS}{}", spec.path), spec))
         .collect();
@@ -144,7 +198,7 @@ pub async fn download(client: &AppleClient) -> Result<Bundle, ClientError> {
     let mut skipped = false;
     let mut transferred = 0u64;
 
-    while found.len() < REQUIRED.len() {
+    while found.len() < specs.len() {
         let Some(chunk) = stream.next().await else {
             break;
         };
@@ -176,15 +230,12 @@ pub async fn download(client: &AppleClient) -> Result<Bundle, ClientError> {
         }
     }
 
-    let bundle = assemble(found)?;
-    validate(&bundle)?;
-
     tracing::info!(
         "extracted Apple SAP assets ({} MB transferred)",
         transferred / (1 << 20)
     );
 
-    Ok(bundle)
+    Ok(found)
 }
 
 /// Drains complete CPIO entries from `pending`. Returns true at the trailer.

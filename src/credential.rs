@@ -39,23 +39,25 @@ struct GoKeyringItem {
 }
 
 impl GoKeyringItem {
+    #[cfg(test)]
     fn from_account(account: &Account) -> Result<Self, IpaToolError> {
-        let data = serde_json::to_vec(account)?;
-        Ok(Self {
-            key: ACCOUNT_KEY.to_string(),
+        Ok(Self::from_data(ACCOUNT_KEY, &serde_json::to_vec(account)?))
+    }
+
+    fn from_data(key: &str, data: &[u8]) -> Self {
+        Self {
+            key: key.to_string(),
             data: base64::engine::general_purpose::STANDARD.encode(data),
             label: SERVICE_NAME.to_string(),
             description: String::new(),
             keychain_not_trust_application: false,
             keychain_not_synchronizable: false,
-        })
+        }
     }
 
-    fn account(&self) -> Result<Account, IpaToolError> {
-        let data = base64::engine::general_purpose::STANDARD
+    fn decode_data(&self) -> Result<Vec<u8>, IpaToolError> {
+        base64::engine::general_purpose::STANDARD
             .decode(&self.data)
-            .map_err(|error| IpaToolError::InvalidEncryptedAccount(error.to_string()))?;
-        serde_json::from_slice(&data)
             .map_err(|error| IpaToolError::InvalidEncryptedAccount(error.to_string()))
     }
 }
@@ -97,26 +99,63 @@ impl CredentialStore {
 
     pub fn store_account(&self, account: &Account) -> Result<(), IpaToolError> {
         match self.backend {
-            CredentialBackend::Native => store_native(account),
-            CredentialBackend::EncryptedFile => self.store_file(account),
+            CredentialBackend::Native => {
+                store_native_data(ACCOUNT_KEY, &serde_json::to_vec(account)?)
+            }
+            CredentialBackend::EncryptedFile => {
+                self.store_file_data(ACCOUNT_KEY, &serde_json::to_vec(account)?)
+            }
         }
     }
 
     pub fn load_account(&self) -> Result<Option<Account>, IpaToolError> {
         match self.backend {
-            CredentialBackend::Native => load_native(),
-            CredentialBackend::EncryptedFile => self.load_file(),
+            CredentialBackend::Native => load_native_data(ACCOUNT_KEY)?
+                .map(|data| serde_json::from_slice(&data).map_err(Into::into))
+                .transpose(),
+            CredentialBackend::EncryptedFile => self
+                .load_file_data(ACCOUNT_KEY)?
+                .map(|data| serde_json::from_slice(&data).map_err(Into::into))
+                .transpose(),
         }
     }
 
     pub fn delete_account(&self) -> Result<(), IpaToolError> {
         match self.backend {
-            CredentialBackend::Native => delete_native(),
+            CredentialBackend::Native => delete_native_data(ACCOUNT_KEY),
             CredentialBackend::EncryptedFile => match std::fs::remove_file(self.account_path()) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(IpaToolError::Io(error)),
             },
+        }
+    }
+
+    /// Separate Go-compatible keyring item; never included in account output.
+    pub(crate) fn load_kbsync(&self) -> Result<Option<Vec<u8>>, IpaToolError> {
+        match self.backend {
+            CredentialBackend::Native => load_native_data("kbsync-v1"),
+            CredentialBackend::EncryptedFile => self.load_file_data("kbsync-v1"),
+        }
+    }
+
+    pub(crate) fn store_kbsync(&self, data: &[u8]) -> Result<(), IpaToolError> {
+        match self.backend {
+            CredentialBackend::Native => store_native_data("kbsync-v1", data),
+            CredentialBackend::EncryptedFile => self.store_file_data("kbsync-v1", data),
+        }
+    }
+
+    pub(crate) fn delete_kbsync(&self) -> Result<(), IpaToolError> {
+        match self.backend {
+            CredentialBackend::Native => delete_native_data("kbsync-v1"),
+            CredentialBackend::EncryptedFile => {
+                match std::fs::remove_file(self.state_dir.join("kbsync-v1")) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(error.into()),
+                }
+            }
         }
     }
 
@@ -138,8 +177,8 @@ impl CredentialStore {
         operation(passphrase.expose_secret())
     }
 
-    fn load_file(&self) -> Result<Option<Account>, IpaToolError> {
-        let path = self.account_path();
+    fn load_file_data(&self, key_name: &str) -> Result<Option<Vec<u8>>, IpaToolError> {
+        let path = self.state_dir.join(key_name);
         let token = match std::fs::read_to_string(&path) {
             Ok(token) => token,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -165,14 +204,19 @@ impl CredentialStore {
                 .map_err(|_| IpaToolError::IncorrectKeyringPassphrase)?;
             let item: GoKeyringItem = serde_json::from_slice(payload)
                 .map_err(|error| IpaToolError::InvalidEncryptedAccount(error.to_string()))?;
-            item.account().map(Some)
+            if item.key != key_name {
+                return Err(IpaToolError::AccountStore(
+                    "keyring item key does not match".into(),
+                ));
+            }
+            item.decode_data().map(Some)
         })
     }
 
-    fn store_file(&self, account: &Account) -> Result<(), IpaToolError> {
+    fn store_file_data(&self, key_name: &str, data: &[u8]) -> Result<(), IpaToolError> {
         std::fs::create_dir_all(&self.state_dir)?;
         self.with_passphrase(|passphrase| {
-            let item = GoKeyringItem::from_account(account)?;
+            let item = GoKeyringItem::from_data(key_name, data);
             let payload = serde_json::to_vec(&item)?;
             let constraints = pbes2_constraints();
             let key = password_key(passphrase);
@@ -195,7 +239,7 @@ impl CredentialStore {
             let token = jwe
                 .compact_serialization()
                 .map_err(|error| IpaToolError::AccountStore(error.to_string()))?;
-            write_private_file(&self.account_path(), token.as_bytes())
+            write_private_file(&self.state_dir.join(key_name), token.as_bytes())
         })
     }
 }
@@ -247,25 +291,25 @@ fn platform_backend() -> CredentialBackend {
 }
 
 #[cfg(target_os = "macos")]
-fn store_native(account: &Account) -> Result<(), IpaToolError> {
-    let entry = keyring::Entry::new(SERVICE_NAME, ACCOUNT_KEY)?;
-    entry.set_secret(&serde_json::to_vec(account)?)?;
+fn store_native_data(key_name: &str, data: &[u8]) -> Result<(), IpaToolError> {
+    let entry = keyring::Entry::new(SERVICE_NAME, key_name)?;
+    entry.set_secret(data)?;
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn load_native() -> Result<Option<Account>, IpaToolError> {
-    let entry = keyring::Entry::new(SERVICE_NAME, ACCOUNT_KEY)?;
+fn load_native_data(key_name: &str) -> Result<Option<Vec<u8>>, IpaToolError> {
+    let entry = keyring::Entry::new(SERVICE_NAME, key_name)?;
     match entry.get_secret() {
-        Ok(data) => Ok(Some(serde_json::from_slice(&data)?)),
+        Ok(data) => Ok(Some(data)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn delete_native() -> Result<(), IpaToolError> {
-    let entry = keyring::Entry::new(SERVICE_NAME, ACCOUNT_KEY)?;
+fn delete_native_data(key_name: &str) -> Result<(), IpaToolError> {
+    let entry = keyring::Entry::new(SERVICE_NAME, key_name)?;
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(error.into()),
@@ -321,7 +365,7 @@ fn decode_secret_service_path(path: &[u8]) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn store_native(account: &Account) -> Result<(), IpaToolError> {
+fn store_native_data(key_name: &str, data: &[u8]) -> Result<(), IpaToolError> {
     use std::collections::HashMap;
     let service = secret_service()?;
     let collection = match find_collection(&service)? {
@@ -333,12 +377,12 @@ fn store_native(account: &Account) -> Result<(), IpaToolError> {
     collection
         .ensure_unlocked()
         .map_err(|error| IpaToolError::AccountStore(error.to_string()))?;
-    let item = GoKeyringItem::from_account(account)?;
+    let item = GoKeyringItem::from_data(key_name, data);
     let secret = serde_json::to_vec(&item)?;
     collection
         .create_item(
-            ACCOUNT_KEY,
-            HashMap::from([("profile", ACCOUNT_KEY)]),
+            key_name,
+            HashMap::from([("profile", key_name)]),
             &secret,
             true,
             "application/json",
@@ -348,14 +392,14 @@ fn store_native(account: &Account) -> Result<(), IpaToolError> {
 }
 
 #[cfg(target_os = "linux")]
-fn load_native() -> Result<Option<Account>, IpaToolError> {
+fn load_native_data(key_name: &str) -> Result<Option<Vec<u8>>, IpaToolError> {
     use std::collections::HashMap;
     let service = secret_service()?;
     let Some(collection) = find_collection(&service)? else {
         return Ok(None);
     };
     let items = collection
-        .search_items(HashMap::from([("profile", ACCOUNT_KEY)]))
+        .search_items(HashMap::from([("profile", key_name)]))
         .map_err(|error| IpaToolError::AccountStore(error.to_string()))?;
     let Some(item) = items.into_iter().next() else {
         return Ok(None);
@@ -366,18 +410,18 @@ fn load_native() -> Result<Option<Account>, IpaToolError> {
         .get_secret()
         .map_err(|error| IpaToolError::AccountStore(error.to_string()))?;
     let item: GoKeyringItem = serde_json::from_slice(&secret)?;
-    item.account().map(Some)
+    item.decode_data().map(Some)
 }
 
 #[cfg(target_os = "linux")]
-fn delete_native() -> Result<(), IpaToolError> {
+fn delete_native_data(key_name: &str) -> Result<(), IpaToolError> {
     use std::collections::HashMap;
     let service = secret_service()?;
     let Some(collection) = find_collection(&service)? else {
         return Ok(());
     };
     let items = collection
-        .search_items(HashMap::from([("profile", ACCOUNT_KEY)]))
+        .search_items(HashMap::from([("profile", key_name)]))
         .map_err(|error| IpaToolError::AccountStore(error.to_string()))?;
     if let Some(item) = items.into_iter().next() {
         item.ensure_unlocked()
@@ -389,17 +433,17 @@ fn delete_native() -> Result<(), IpaToolError> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn store_native(_account: &Account) -> Result<(), IpaToolError> {
+fn store_native_data(_key_name: &str, _data: &[u8]) -> Result<(), IpaToolError> {
     unreachable!()
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn load_native() -> Result<Option<Account>, IpaToolError> {
+fn load_native_data(key_name: &str) -> Result<Option<Vec<u8>>, IpaToolError> {
     unreachable!()
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn delete_native() -> Result<(), IpaToolError> {
+fn delete_native_data(key_name: &str) -> Result<(), IpaToolError> {
     unreachable!()
 }
 
@@ -449,6 +493,25 @@ mod tests {
             store.load_account().unwrap().unwrap().email,
             "person@example.com"
         );
+        let cache = br#"{"dsid":1234,"guid":"AABBCCDDEEFF","data":"YmxvYg=="}"#;
+        store.store_kbsync(cache).unwrap();
+        assert_eq!(store.load_kbsync().unwrap().unwrap(), cache);
+        let encrypted = std::fs::read_to_string(state_dir.join("kbsync-v1")).unwrap();
+        let constraints = pbes2_constraints();
+        let key = password_key("correct horse");
+        let mut jwe = JsonWebEncryption::new();
+        jwe.set_algorithm_constraints(&constraints);
+        jwe.set_compact_serialization(&encrypted).unwrap();
+        let item: GoKeyringItem = serde_json::from_slice(jwe.payload(&key).unwrap()).unwrap();
+        assert_eq!(item.key, "kbsync-v1");
+        assert_eq!(item.decode_data().unwrap(), cache);
+        assert_eq!(
+            store.load_account().unwrap().unwrap().email,
+            "person@example.com"
+        );
+        store.delete_kbsync().unwrap();
+        assert!(store.load_kbsync().unwrap().is_none());
+        assert!(store.load_account().unwrap().is_some());
         std::fs::remove_dir_all(state_dir).unwrap();
     }
 

@@ -23,6 +23,10 @@ pub fn register(shims: &mut Shims, guest: &Guest<'_>) -> Result<(), ClientError>
         (&["_calloc"], Shim::Calloc),
         (&["_realloc", "_reallocf"], Shim::Realloc),
         (&["_free"], Shim::Free),
+        (&["_mmap"], Shim::Mmap),
+        (&["_munmap"], Shim::Munmap),
+        (&["_vm_allocate"], Shim::VmAllocate),
+        (&["_vm_deallocate"], Shim::VmDeallocate),
         (&["_memcpy", "_memmove"], Shim::Memmove),
         (&["_memset"], Shim::Memset),
         (&["___bzero"], Shim::Bzero),
@@ -54,6 +58,34 @@ pub fn handle(
         Shim::Calloc => calloc(shims, guest),
         Shim::Realloc => realloc(shims, guest),
         Shim::Free => free(shims, guest),
+        Shim::Mmap | Shim::VmAllocate => (|| {
+            let vm = *shim == Shim::VmAllocate;
+            let size = argument(guest, if vm { 2 } else { 1 })?;
+            let address = match allocate_aligned(shims, size, super::PAGE_SIZE) {
+                Ok(address) => address,
+                Err(_) => return set_result(guest, if vm { 3 } else { u64::MAX }),
+            };
+            guest.mem_write(address, &vec![0; checked_size(size)?])?;
+            if vm {
+                super::write_u64(guest, argument(guest, 1)?, address)?;
+            }
+            set_result(guest, if vm { 0 } else { address })
+        })(),
+        Shim::Munmap | Shim::VmDeallocate => (|| {
+            let vm = *shim == Shim::VmDeallocate;
+            let address = argument(guest, if vm { 1 } else { 0 })?;
+            let result = release(shims, guest, address);
+            set_result(
+                guest,
+                if result.is_ok() {
+                    0
+                } else if vm {
+                    1
+                } else {
+                    u64::MAX
+                },
+            )
+        })(),
         Shim::Memmove => memmove(guest),
         Shim::Memset => memset(guest),
         Shim::Bzero => bzero(guest),
@@ -173,6 +205,59 @@ fn free(shims: &mut Shims, guest: &Guest<'_>) -> Result<(), ClientError> {
 
 fn reserved_for(size: u64) -> u64 {
     size.max(1).next_multiple_of(16)
+}
+
+fn allocate_aligned(shims: &mut Shims, size: u64, alignment: u64) -> Result<u64, ClientError> {
+    checked_size(size)?;
+    let reserved = size.max(1).next_multiple_of(16);
+    if let Some((index, address)) =
+        shims
+            .free_blocks
+            .iter()
+            .enumerate()
+            .find_map(|(index, block)| {
+                let address = block.address.next_multiple_of(alignment);
+                (address - block.address <= block.size
+                    && reserved <= block.size - (address - block.address))
+                    .then_some((index, address))
+            })
+    {
+        let block = shims.free_blocks.remove(index);
+        if address > block.address {
+            shims.free_blocks.push(FreeBlock {
+                address: block.address,
+                size: address - block.address,
+            });
+        }
+        let end = address + reserved;
+        if end < block.address + block.size {
+            shims.free_blocks.push(FreeBlock {
+                address: end,
+                size: block.address + block.size - end,
+            });
+        }
+        shims
+            .allocations
+            .insert(address, Allocation { size, reserved });
+        coalesce(shims);
+        return Ok(address);
+    }
+    let address = (HEAP_BASE + shims.heap_cursor).next_multiple_of(alignment);
+    let end = address
+        .checked_add(reserved)
+        .filter(|end| *end <= HEAP_BASE + HEAP_SIZE)
+        .ok_or_else(|| ClientError::Sap("guest heap exhausted".into()))?;
+    if address > HEAP_BASE + shims.heap_cursor {
+        shims.free_blocks.push(FreeBlock {
+            address: HEAP_BASE + shims.heap_cursor,
+            size: address - HEAP_BASE - shims.heap_cursor,
+        });
+    }
+    shims.heap_cursor = end - HEAP_BASE;
+    shims
+        .allocations
+        .insert(address, Allocation { size, reserved });
+    Ok(address)
 }
 
 fn allocate(shims: &mut Shims, size: u64) -> Result<u64, ClientError> {
@@ -397,6 +482,7 @@ mod tests {
 
     fn shims() -> Shims {
         Shims {
+            callback_returns: Vec::new(),
             entries: Default::default(),
             symbols: Default::default(),
             code_cursor: 0,

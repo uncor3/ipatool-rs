@@ -6,6 +6,7 @@ pub mod guid;
 pub mod ipa;
 pub mod model;
 pub mod sap;
+pub mod store;
 
 mod tool;
 

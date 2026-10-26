@@ -17,16 +17,13 @@ const AUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const AUTH_RETRY_DELAY: Duration = Duration::from_secs(10);
 const MAX_AUTH_RETRY_DELAY: Duration = Duration::from_secs(30);
 
-/// Header carrying the SAP signature over the request body.
-const ACTION_SIGNATURE_HEADER: &str = "X-Apple-ActionSignature";
-
 pub async fn login(
     client: &AppleClient,
     email: &str,
     password: &str,
     auth_code: Option<&str>,
     auth_url: &Url,
-    signer: Option<&dyn ActionSigner>,
+    signer: Option<std::sync::Arc<dyn ActionSigner>>,
 ) -> Result<Account, ClientError> {
     super::bag::validate_auth_endpoint(auth_url)?;
     let auth_code = normalize_auth_code(auth_code.unwrap_or_default())?;
@@ -43,21 +40,13 @@ pub async fn login(
         plist::to_writer_xml(&mut body_bytes, &body)
             .map_err(|e| ClientError::UnexpectedResponse(format!("plist serialize: {e}")))?;
 
-        // Apple signs the exact bytes it receives, so this has to happen after
-        // the body is serialized. Transport retries reuse these exact bytes and
-        // this exact signature; they are not new Apple credential attempts.
-        let action_signature = signer
-            .map(|signer| signer.sign(&body_bytes))
-            .transpose()?
-            .map(|signature| encode_base64(&signature));
-
         let response = send_authentication_request(
             client,
             &current_url,
             &body_bytes,
-            action_signature.as_deref(),
             phone_number_storefront(email),
             attempt,
+            signer.clone(),
         )
         .await?;
         let status = response.status;
@@ -224,9 +213,9 @@ async fn send_authentication_request(
     client: &AppleClient,
     url: &Url,
     body: &[u8],
-    action_signature: Option<&str>,
     storefront: Option<&str>,
     apple_attempt: u32,
+    signer: Option<std::sync::Arc<dyn ActionSigner>>,
 ) -> Result<AuthHttpResponse, ClientError> {
     let mut outcomes = Vec::with_capacity(MAX_AUTH_REQUEST_ATTEMPTS as usize);
 
@@ -235,7 +224,7 @@ async fn send_authentication_request(
             attempt = apple_attempt,
             request_attempt,
             %url,
-            signed = action_signature.is_some(),
+            signed = signer.is_some(),
             "sending auth request"
         );
 
@@ -244,16 +233,27 @@ async fn send_authentication_request(
             .post(url.as_str())
             .header("Content-Type", "application/x-www-form-urlencoded")
             .timeout(AUTH_REQUEST_TIMEOUT);
-        if let Some(signature) = action_signature {
-            request = request.header(ACTION_SIGNATURE_HEADER, signature);
-        }
         if let Some(storefront) = storefront {
             request = request.header("X-Apple-Store-Front", storefront);
         }
 
-        let response = match request.body(body.to_vec()).send().await {
+        let parameters = plist::Value::from_reader(std::io::Cursor::new(body))?
+            .into_dictionary()
+            .ok_or_else(|| {
+                ClientError::UnexpectedResponse("invalid authentication parameters".into())
+            })?;
+        let response = match client
+            .store_send(
+                "authenticate",
+                request.body(body.to_vec()).build()?,
+                Some(parameters),
+                signer.clone(),
+                crate::store::RequestOptions::PLIST,
+            )
+            .await
+        {
             Ok(response) => response,
-            Err(error) if is_retryable_transport_error(&error) => {
+            Err(error) if is_retryable_store_transport_error(&error) => {
                 outcomes.push("transport error".to_string());
                 if request_attempt == MAX_AUTH_REQUEST_ATTEMPTS {
                     return Err(authentication_attempts_exhausted(&outcomes));
@@ -261,14 +261,14 @@ async fn send_authentication_request(
                 sleep_before_auth_retry(None, request_attempt).await?;
                 continue;
             }
-            Err(error) => return Err(ClientError::Http(error)),
+            Err(error) => return Err(error),
         };
 
         let status = response.status();
         let headers = response.headers().clone();
         let response_body = match response.bytes().await {
             Ok(body) => body,
-            Err(error) if is_retryable_transport_error(&error) => {
+            Err(error) if is_retryable_store_transport_error(&error) => {
                 outcomes.push("transport error".to_string());
                 if request_attempt == MAX_AUTH_REQUEST_ATTEMPTS {
                     return Err(authentication_attempts_exhausted(&outcomes));
@@ -276,12 +276,11 @@ async fn send_authentication_request(
                 sleep_before_auth_retry(Some(&headers), request_attempt).await?;
                 continue;
             }
-            Err(error) => return Err(ClientError::Http(error)),
+            Err(error) => return Err(error),
         };
         tracing::debug!(%status, request_attempt, "auth response status");
 
-        if !is_retryable_auth_response(status, &headers, &response_body, action_signature.is_some())
-        {
+        if !is_retryable_auth_response(status, &headers, &response_body, signer.is_some()) {
             return Ok(AuthHttpResponse {
                 status,
                 headers,
@@ -390,6 +389,14 @@ fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
     false
 }
 
+fn is_retryable_store_transport_error(error: &ClientError) -> bool {
+    match error {
+        ClientError::Http(error) => is_retryable_transport_error(error),
+        ClientError::StoreHeaderTimeout => true,
+        _ => false,
+    }
+}
+
 async fn sleep_before_auth_retry(
     headers: Option<&HeaderMap>,
     request_attempt: u32,
@@ -444,11 +451,6 @@ fn authentication_attempts_exhausted(outcomes: &[String]) -> ClientError {
         outcomes.len(),
         outcomes.join(", ")
     ))
-}
-
-fn encode_base64(data: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
 fn build_auth_plist(email: &str, password: &str, guid: &str, attempt: u32) -> plist::Dictionary {

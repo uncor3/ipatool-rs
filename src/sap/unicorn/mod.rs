@@ -75,6 +75,7 @@ type HookHandle = usize;
 /// Held at a stable address so hook callbacks can reach it through a raw
 /// pointer carried in Unicorn's `user_data`.
 struct Api {
+    architecture: Architecture,
     version: unsafe extern "C" fn(*mut u32, *mut u32) -> u32,
     open: unsafe extern "C" fn(c_int, c_int, *mut Handle) -> c_int,
     close: unsafe extern "C" fn(Handle) -> c_int,
@@ -113,6 +114,9 @@ pub struct Guest<'a> {
 }
 
 impl Guest<'_> {
+    pub fn architecture(&self) -> Architecture {
+        self.api.architecture
+    }
     pub fn mem_map(&self, address: u64, size: u64) -> Result<(), ClientError> {
         // SAFETY: `handle` is a live engine created by `uc_open`.
         self.check(unsafe { (self.api.mem_map)(self.handle, address, size as usize, PROT_ALL) })
@@ -257,6 +261,7 @@ impl Engine {
         // pinned version, and the pointers live no longer than `library`.
         let api = unsafe {
             Box::new(Api {
+                architecture,
                 version: symbol(&library, b"uc_version\0")?,
                 open: symbol(&library, b"uc_open\0")?,
                 close: symbol(&library, b"uc_close\0")?,

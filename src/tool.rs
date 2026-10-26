@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::api;
 use crate::client::AppleClient;
@@ -19,7 +20,7 @@ pub struct DownloadArgs {
 
 pub struct IpaTool {
     client: AppleClient,
-    credentials: CredentialStore,
+    credentials: Arc<CredentialStore>,
     state_dir: PathBuf,
 }
 
@@ -35,12 +36,13 @@ impl IpaTool {
             .join(".ipatool");
         create_private_state_dir(&state_dir)?;
 
-        let client = AppleClient::new(
+        let mut client = AppleClient::new(
             identity,
             Some(&state_dir.join("cookies")),
             state_dir.join("cache"),
         )?;
-        let credentials = CredentialStore::new(state_dir.clone(), passphrase);
+        let credentials = Arc::new(CredentialStore::new(state_dir.clone(), passphrase));
+        client.credentials = Some(Arc::clone(&credentials));
         Ok(Self {
             client,
             credentials,
@@ -68,8 +70,9 @@ impl IpaTool {
         auth_code: Option<String>,
     ) -> Result<()> {
         let bag = api::bag::fetch_bag(&self.client).await?;
-        let signer =
-            sap::new_default_signer(&self.client, &bag.sap, self.client.hardware_id()).await?;
+        let signer: std::sync::Arc<dyn sap::ActionSigner> = std::sync::Arc::new(
+            sap::new_default_signer(&self.client, &bag.sap, self.client.hardware_id()).await?,
+        );
 
         let first = api::auth::login(
             &self.client,
@@ -77,7 +80,7 @@ impl IpaTool {
             password,
             auth_code.as_deref(),
             &bag.auth_endpoint,
-            Some(&signer),
+            Some(signer.clone()),
         )
         .await;
 
@@ -92,7 +95,7 @@ impl IpaTool {
                     password,
                     Some(&code),
                     &bag.auth_endpoint,
-                    Some(&signer),
+                    Some(signer.clone()),
                 )
                 .await?
             }
@@ -110,6 +113,10 @@ impl IpaTool {
     }
 
     pub fn revoke(&self) -> Result<()> {
+        self.credentials.delete_kbsync()?;
+        if let Ok(mut cache) = self.client.kbsync.lock() {
+            *cache = None;
+        }
         self.credentials.delete_account()
     }
 

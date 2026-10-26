@@ -11,6 +11,14 @@ pub async fn purchase(
     app_id: i64,
     account: &Account,
 ) -> Result<(), ClientError> {
+    let needs_bag = client
+        .store_bag
+        .lock()
+        .map_err(|_| ClientError::Sap("Store bag lock poisoned".into()))?
+        .is_none();
+    if needs_bag {
+        super::bag::fetch_bag(client).await?;
+    }
     for attempt in 0..MAX_PURCHASE_ATTEMPTS {
         let result = match try_purchase(client, app_id, account, "STDQ").await {
             Err(ClientError::Store(StoreError::TemporarilyUnavailable)) => {
@@ -93,7 +101,7 @@ async fn try_purchase(
     plist::to_writer_xml(&mut body_bytes, &body)
         .map_err(|e| ClientError::UnexpectedResponse(format!("plist serialize: {e}")))?;
 
-    let resp = client
+    let request = client
         .http()
         .post(&url)
         .header("Content-Type", "application/x-apple-plist")
@@ -102,13 +110,20 @@ async fn try_purchase(
         .header("X-Apple-Store-Front", &account.store_front)
         .header("X-Token", &account.password_token)
         .body(body_bytes)
-        .send()
+        .build()?;
+    let resp = client
+        .store_send(
+            "purchase",
+            request,
+            Some(body),
+            None,
+            crate::store::RequestOptions::PLIST,
+        )
         .await?;
 
     let resp_body = resp.bytes().await?;
     tracing::debug!(
         len = resp_body.len(),
-        preview = %String::from_utf8_lossy(&resp_body[..resp_body.len().min(500)]),
         pricing = pricing_parameters,
         "purchase response body"
     );

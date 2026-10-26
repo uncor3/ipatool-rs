@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod bag;
 pub mod download;
+pub(crate) mod kbsync;
 pub mod lookup;
 pub(crate) mod platform_version;
 pub mod purchase;

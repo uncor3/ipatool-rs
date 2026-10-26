@@ -25,10 +25,10 @@ impl DownloadEndpoint {
     }
 }
 
-struct DownloadResponse {
-    status: reqwest::StatusCode,
-    body: Vec<u8>,
-    dict: Option<HashMap<String, plist::Value>>,
+pub(super) struct DownloadResponse {
+    pub(super) status: reqwest::StatusCode,
+    pub(super) body: Vec<u8>,
+    pub(super) dict: Option<HashMap<String, plist::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +155,30 @@ async fn try_get_download_info(
     external_version_id: Option<&str>,
     platform: Platform,
 ) -> Result<DownloadItem, ClientError> {
+    let bag = crate::api::bag::fetch_bag(client).await.ok();
+    if let Some(endpoint) = bag
+        .as_ref()
+        .and_then(|bag| bag.ent_download_endpoint.as_ref())
+    {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            super::kbsync::download(
+                client,
+                endpoint,
+                app_id,
+                bundle_id,
+                account,
+                external_version_id,
+                platform,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(item)) => return Ok(item),
+            Ok(Err(error @ ClientError::Sap(_))) => return Err(error),
+            _ => tracing::debug!("preferred ent/download unavailable; using legacy download flow"),
+        }
+    }
     let platform_version = if external_version_id.is_none()
         && matches!(platform, Platform::WatchOS | Platform::AppleTV)
     {
@@ -183,7 +207,10 @@ async fn try_get_download_info(
     }
 
     tracing::debug!("legacy download endpoint returned no item; trying redownload endpoint");
-    let bag = crate::api::bag::fetch_bag(client).await?;
+    let bag = match bag {
+        Some(bag) => bag,
+        None => crate::api::bag::fetch_bag(client).await?,
+    };
     let Some(mut redownload_url) = bag.redownload_endpoint else {
         return download_item_from_response(legacy);
     };
@@ -240,7 +267,7 @@ async fn try_get_download_info(
     validated_download_item(redownload, app_id, bundle_id, external_version_id)
 }
 
-fn validated_download_item(
+pub(super) fn validated_download_item(
     response: DownloadResponse,
     app_id: i64,
     bundle_id: Option<&str>,
@@ -314,7 +341,7 @@ async fn send_download_request(
         "download request"
     );
 
-    let resp = client
+    let request = client
         .http()
         .post(&url)
         .header("Content-Type", "application/x-apple-plist")
@@ -322,7 +349,15 @@ async fn send_download_request(
         .header("X-Dsid", &account.directory_services_id)
         .timeout(std::time::Duration::from_secs(30))
         .body(body_bytes)
-        .send()
+        .build()?;
+    let resp = client
+        .store_send(
+            "download",
+            request,
+            Some(body),
+            None,
+            crate::store::RequestOptions::PLIST,
+        )
         .await?;
 
     let status = resp.status();
@@ -532,7 +567,18 @@ where
         tracing::info!(existing_size, "resuming download");
     }
 
-    let resp = req.send().await?;
+    let response = client
+        .store_send(
+            "transfer",
+            req.build()?,
+            None,
+            None,
+            crate::store::RequestOptions::TRANSFER,
+        )
+        .await?;
+    let resp = response.stream.ok_or_else(|| {
+        ClientError::UnexpectedResponse("Store transfer returned no response stream".into())
+    })?;
 
     if resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
         tracing::info!("file already fully downloaded");

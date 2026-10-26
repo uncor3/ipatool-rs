@@ -183,16 +183,15 @@ pub async fn new_signer(
 
 /// Builds the emulated SAP backend and establishes a signer with it.
 ///
-/// The Apple frameworks and the emulator are downloaded on first use and cached
-/// under the client's cache directory, so only the first call is slow.
+/// Uses the shared checksum-verified macOS 27 asset cache and the packaged
+/// Unicorn library. Missing assets are extracted from the pinned Apple IPSW.
 pub async fn new_default_signer(
     client: &AppleClient,
     config: &SapConfig,
     hardware_id: &[u8],
 ) -> Result<Signer, ClientError> {
-    let cache_dir = client.cache_dir().to_path_buf();
-    let bundle = assets::load(client, &cache_dir.join("apple-assets")).await?;
-    let machine = machine::Machine::open(client, &cache_dir, &bundle).await?;
+    let bundle = assets::macos27::load().await?;
+    let machine = machine::Machine::open_macos27(client, &bundle, false).await?;
 
     new_signer(client, Arc::new(machine), config, hardware_id).await
 }

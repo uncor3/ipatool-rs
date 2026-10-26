@@ -6,6 +6,7 @@
 //! is resolved by the caller — to a real export in a sibling image, or to a
 //! shim stub.
 
+mod arm64;
 pub mod fixups;
 
 use std::collections::HashMap;
@@ -56,6 +57,8 @@ pub struct Image {
     rebases: Vec<fixups::Rebase>,
     binds: Vec<fixups::Bind>,
     loaded_base: Option<u64>,
+    chained: Option<(u32, u32)>,
+    arm64: bool,
 }
 
 impl Image {
@@ -73,6 +76,8 @@ impl Image {
             rebases: Vec::new(),
             binds: Vec::new(),
             loaded_base: None,
+            chained: None,
+            arm64: false,
         };
 
         image.parse().map_err(|e| match e {
@@ -90,8 +95,16 @@ impl Image {
             return Err(ClientError::Sap("not a 64-bit Mach-O".into()));
         }
 
-        if read_u32(header, 4)? != CPU_TYPE_X86_64 {
-            return Err(ClientError::Sap("not an x86-64 Mach-O".into()));
+        if read_u32(header, 4)?
+            != if self.arm64 {
+                0x0100_000c
+            } else {
+                CPU_TYPE_X86_64
+            }
+        {
+            return Err(ClientError::Sap(
+                "unexpected Mach-O CPU architecture".into(),
+            ));
         }
 
         let command_count = read_u32(header, 16)?;
@@ -131,6 +144,7 @@ impl Image {
                         lazy_bind: (read_u32(body, 32)?, read_u32(body, 36)?),
                     });
                 }
+                0x8000_0034 => self.chained = Some((read_u32(body, 8)?, read_u32(body, 12)?)),
                 _ => {}
             }
 
@@ -337,6 +351,7 @@ impl Image {
             self.put_pointer(offset, value)?;
         }
 
+        self.relocate_chained(load_base, &mut resolve)?;
         self.loaded_base = Some(load_base);
 
         Ok(())
@@ -347,6 +362,10 @@ impl Image {
         let loaded_base = self.loaded_base.ok_or_else(|| {
             ClientError::Sap(format!("{} must be relocated before loading", self.name))
         })?;
+
+        if self.arm64 {
+            return self.load_sparse(memory, loaded_base);
+        }
 
         let mut span = 0u64;
 

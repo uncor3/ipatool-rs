@@ -13,7 +13,7 @@ use super::{
     write_u64,
 };
 use crate::error::ClientError;
-use crate::sap::unicorn::{Guest, reg};
+use crate::sap::unicorn::{Architecture, Guest, arm64_reg, reg};
 
 /// Returned where the guest only checks for non-NULL.
 const FAKE_HANDLE: u64 = u64::MAX;
@@ -112,8 +112,16 @@ pub fn register(shims: &mut Shims, guest: &Guest<'_>) -> Result<(), ClientError>
         (&["_objc_msgSend"], Shim::ObjcMsgSend),
         (&["_open", "_open$UNIX2003"], Shim::Open),
         (&["_pthread_once"], Shim::PthreadOnce),
+        (&["_dispatch_once"], Shim::DispatchOnce),
+        (
+            &["___chkstk_darwin", "____chkstk_darwin"],
+            Shim::ReturnUnchanged,
+        ),
         (&["_read", "_read$UNIX2003"], Shim::Read),
         (&["_sysctlbyname"], Shim::Sysctlbyname),
+        (&["_sysconf"], Shim::Sysconf),
+        (&["_basename"], Shim::Basename),
+        (&["_bootstrap_look_up"], Shim::BootstrapLookup),
     ];
 
     for (names, shim) in services {
@@ -167,7 +175,65 @@ pub fn handle(
         Shim::Gettimeofday => gettimeofday(guest),
         Shim::ObjcMsgSend => objc_msg_send(guest),
         Shim::Open => open(shims, guest),
+        Shim::PthreadOnce if guest.architecture() == Architecture::Arm64 => (|| {
+            let control = argument(guest, 0)?;
+            let initializer = argument(guest, 1)?;
+            let value = read_u64(guest, control)?;
+            if value == 0 || value == 0x4f4e4345 {
+                set_result(guest, 0)
+            } else {
+                write_u64(guest, control, 0x4f4e4345)?;
+                invoke_callback(shims, guest, initializer)
+            }
+        })(),
         Shim::PthreadOnce => pthread_once(guest),
+        Shim::DispatchOnce => (|| {
+            let predicate = argument(guest, 0)?;
+            let block = argument(guest, 1)?;
+            if read_u64(guest, predicate)? == u64::MAX {
+                set_result(guest, 0)
+            } else {
+                write_u64(guest, predicate, u64::MAX)?;
+                let initializer = read_u64(guest, block + 16)?;
+                guest.reg_write(arm64_reg::X0, block)?;
+                invoke_callback(shims, guest, initializer)
+            }
+        })(),
+        Shim::CallbackComplete => (|| {
+            let address = shims
+                .callback_returns
+                .pop()
+                .ok_or_else(|| ClientError::Sap("guest callback stack is empty".into()))?;
+            guest.reg_write(arm64_reg::LR, address)?;
+            set_result(guest, 0)
+        })(),
+        Shim::ReturnUnchanged => Ok(()),
+        Shim::Sysconf => (|| {
+            let result = match argument(guest, 0)? {
+                29 => super::PAGE_SIZE,
+                57 | 58 => 1,
+                200 => super::HEAP_SIZE / super::PAGE_SIZE,
+                _ => u64::MAX,
+            };
+            set_result(guest, result)
+        })(),
+        Shim::Basename => (|| {
+            let address = argument(guest, 0)?;
+            let path = read_c_string(guest, address)?;
+            let start = path
+                .trim_end_matches('/')
+                .rfind('/')
+                .map(|offset| offset + 1)
+                .unwrap_or(0);
+            set_result(guest, address + start as u64)
+        })(),
+        Shim::BootstrapLookup => (|| {
+            let service = argument(guest, 2)?;
+            if service != 0 {
+                write_u32(guest, service, 0)?;
+            }
+            set_result(guest, 5)
+        })(),
         Shim::Read => read(shims, guest),
         Shim::Sysctlbyname => sysctlbyname(guest),
         _ => return None,
@@ -334,6 +400,17 @@ fn open(shims: &mut Shims, guest: &Guest<'_>) -> Result<(), ClientError> {
 /// Arranges for the initializer to run once, by pushing it as the stub's return
 /// address: the stub's `ret` jumps to the initializer, whose own `ret` then
 /// returns to the original caller.
+fn invoke_callback(
+    shims: &mut Shims,
+    guest: &Guest<'_>,
+    initializer: u64,
+) -> Result<(), ClientError> {
+    shims.callback_returns.push(guest.reg_read(arm64_reg::LR)?);
+    let completion = shims.resolve("callback.complete", guest)?;
+    guest.reg_write(arm64_reg::LR, completion)?;
+    guest.reg_write(arm64_reg::PC, initializer)
+}
+
 fn pthread_once(guest: &Guest<'_>) -> Result<(), ClientError> {
     let control = argument(guest, 0)?;
     let initializer = argument(guest, 1)?;

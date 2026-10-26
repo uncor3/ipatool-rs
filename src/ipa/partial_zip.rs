@@ -23,8 +23,8 @@ pub struct RemoteInfoPlist {
     pub modified: Option<zip::DateTime>,
 }
 
-struct RemoteZip {
-    client: reqwest::Client,
+struct RemoteZip<'a> {
+    client: &'a crate::client::AppleClient,
     url: String,
     size: u64,
 }
@@ -50,14 +50,26 @@ struct CentralDirectoryEntry {
     modified: Option<zip::DateTime>,
 }
 
-impl RemoteZip {
-    async fn new(client: &reqwest::Client, url: &str) -> Result<Self, ClientError> {
-        let resp = client
+impl<'a> RemoteZip<'a> {
+    async fn new(client: &'a crate::client::AppleClient, url: &str) -> Result<Self, ClientError> {
+        let request = client
+            .http()
             .get(url)
             .header("Accept-Encoding", "identity")
             .header("Range", "bytes=0-0")
-            .send()
+            .build()?;
+        let response = client
+            .store_send(
+                "transfer",
+                request,
+                None,
+                None,
+                crate::store::RequestOptions::TRANSFER,
+            )
             .await?;
+        let resp = response
+            .stream
+            .ok_or_else(|| zip_error("missing Store range response stream"))?;
 
         if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
             return Err(zip_error(format!(
@@ -75,7 +87,7 @@ impl RemoteZip {
             .ok_or_else(|| zip_error("missing Content-Range for size"))?;
 
         Ok(Self {
-            client: client.clone(),
+            client,
             url: url.to_string(),
             size,
         })
@@ -96,13 +108,26 @@ impl RemoteZip {
             .min(self.size - 1);
         let range = format!("bytes={start}-{end}");
 
-        let resp = self
+        let request = self
             .client
+            .http()
             .get(&self.url)
             .header("Accept-Encoding", "identity")
             .header("Range", range)
-            .send()
+            .build()?;
+        let response = self
+            .client
+            .store_send(
+                "transfer",
+                request,
+                None,
+                None,
+                crate::store::RequestOptions::TRANSFER,
+            )
             .await?;
+        let resp = response
+            .stream
+            .ok_or_else(|| zip_error("missing Store range response stream"))?;
 
         if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
             return Err(zip_error(format!(
@@ -199,7 +224,7 @@ impl EndOfCentralDirectory {
 }
 
 pub async fn read_remote_info_plist(
-    client: &reqwest::Client,
+    client: &crate::client::AppleClient,
     url: &str,
 ) -> Result<RemoteInfoPlist, ClientError> {
     let remote = RemoteZip::new(client, url).await?;

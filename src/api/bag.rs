@@ -20,19 +20,28 @@ const AUTH_POD_SUFFIX: &str = "-buy.itunes.apple.com";
 #[derive(Debug, Clone)]
 pub struct BagConfig {
     pub auth_endpoint: Url,
+    pub ent_download_endpoint: Option<Url>,
     pub redownload_endpoint: Option<Url>,
     pub update_endpoint: Option<Url>,
     pub sap: SapConfig,
 }
 
 pub async fn fetch_bag(client: &AppleClient) -> Result<BagConfig, ClientError> {
-    let resp = client
+    let request = client
         .http()
         .get(BAG_URL)
         .query(&[("guid", client.guid())])
         .header("Accept", "application/xml")
         .timeout(BAG_REQUEST_TIMEOUT)
-        .send()
+        .build()?;
+    let resp = client
+        .store_send(
+            "bag",
+            request,
+            None,
+            None,
+            crate::store::RequestOptions::PLIST,
+        )
         .await?;
     let resp = resp.error_for_status()?;
     let body = resp.bytes().await?;
@@ -92,6 +101,10 @@ fn parse_bag(inner: &HashMap<String, plist::Value>) -> Result<BagConfig, ClientE
 
     Ok(BagConfig {
         auth_endpoint,
+        ent_download_endpoint: inner
+            .get("volumeStoreDownloadProduct")
+            .and_then(plist::Value::as_string)
+            .and_then(|value| Url::parse(value).ok()),
         redownload_endpoint: optional_download_url(inner, "redownloadProduct", "/r/redownload")?,
         update_endpoint: optional_download_url(inner, "updateProduct", "/up/updateProduct")?,
         sap,
@@ -141,9 +154,9 @@ pub fn validate_auth_endpoint(url: &Url) -> Result<(), ClientError> {
         || url.fragment().is_some()
         || url.port().is_some_and(|port| port != 443)
     {
-        return Err(ClientError::UnexpectedResponse(format!(
-            "invalid authentication endpoint"
-        )));
+        return Err(ClientError::UnexpectedResponse(
+            "invalid authentication endpoint".into(),
+        ));
     }
 
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
